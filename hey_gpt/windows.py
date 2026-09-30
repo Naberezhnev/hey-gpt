@@ -39,13 +39,13 @@ class Selector:
     def capture(cls, control):
         value = cls(control.ControlTypeName, control.Name, control.AutomationId)
         if not value.name and not value.automation_id:
-            raise RuntimeError("This element has no accessible name or ID.")
+            raise RuntimeError("У элемента нет доступного имени или ID.")
         return value
 
     def matches(self, control):
         return (control.ControlTypeName == self.control_type
-                and control.Name == self.name
-                and control.AutomationId == self.automation_id)
+                and (control.AutomationId == self.automation_id if self.automation_id
+                     else control.Name == self.name))
 
 
 class WindowsAdapter:
@@ -57,16 +57,20 @@ class WindowsAdapter:
     def capture_at_cursor(self, role):
         point = wintypes.POINT()
         if not user32.GetCursorPos(ctypes.byref(point)):
-            raise RuntimeError("Cannot read cursor position.")
+            raise RuntimeError("Не удалось определить положение курсора.")
         hwnd = user32.GetAncestor(user32.WindowFromPoint(point), 2)
         name = title(hwnd)
         if not any(token in name.casefold() for token in ("chatgpt", "codex")):
-            raise RuntimeError("Choose an open ChatGPT/Codex window whose title includes its name.")
-        if self.hwnd and hwnd != self.hwnd:
-            raise RuntimeError("All controls must belong to the same bound window. Rebind first.")
-        self.hwnd, self.window_title = hwnd, name
+            raise RuntimeError("Выбери окно с ChatGPT или Codex в заголовке.")
+        if role != "window" and self.hwnd and hwnd != self.hwnd:
+            raise RuntimeError("Выбирай элементы в одном окне. Для смены окна начни с шага 1.")
         if role == "window":
+            if self.hwnd is not None and self.hwnd != hwnd:
+                self.selectors.clear()
+            self.hwnd, self.window_title = hwnd, name
             return name
+        if not self.hwnd:
+            raise RuntimeError("Сначала выбери окно чата.")
         control = auto.ControlFromPoint(point.x, point.y)
         for _ in range(12):
             if control is None:
@@ -78,27 +82,36 @@ class WindowsAdapter:
                 break
             control = control.GetParentControl()
         if control is None:
-            raise RuntimeError("Could not find an accessible control under the cursor.")
+            raise RuntimeError("Под курсором не найден доступный элемент.")
         expected = "EditControl" if role == "composer" else "ButtonControl"
         if control.ControlTypeName != expected:
-            raise RuntimeError("Choose an accessible " + expected + ".")
-        self.selectors[role] = Selector.capture(control)
+            raise RuntimeError("Выбери поле сообщения." if role == "composer" else "Выбери кнопку.")
+        selected = Selector.capture(control)
+        previous = self.selectors.get(role)
+        self.selectors[role] = selected
         # Prove the selector is unambiguous now; later it is resolved again.
-        self.find(role)
+        try:
+            self.find(role, require_foreground=False)
+        except Exception:
+            if previous is None:
+                self.selectors.pop(role, None)
+            else:
+                self.selectors[role] = previous
+            raise
         return self.selectors[role].name or self.selectors[role].automation_id
 
-    def validate(self):
+    def validate(self, *, require_foreground=True):
         if not self.hwnd or not user32.IsWindow(self.hwnd):
-            raise RuntimeError("Bind the target chat window first.")
-        if user32.GetForegroundWindow() != self.hwnd:
-            raise RuntimeError("The bound chat window must be in the foreground.")
+            raise RuntimeError("Сначала выбери окно чата.")
+        if require_foreground and user32.GetForegroundWindow() != self.hwnd:
+            raise RuntimeError("Вернись в выбранное окно чата; затем сбрось цикл.")
         if title(self.hwnd) != self.window_title:
-            raise RuntimeError("The active tab or window title changed. Rebind the intended chat.")
+            raise RuntimeError("Заголовок окна или вкладка изменились. Выбери нужное окно заново.")
 
-    def find(self, role, *, optional=False):
-        self.validate()
+    def find(self, role, *, optional=False, require_foreground=True):
+        self.validate(require_foreground=require_foreground)
         if role not in self.selectors:
-            raise RuntimeError("Configure the " + role + " control first.")
+            raise RuntimeError("Сначала настрой элемент: " + role)
         root = auto.ControlFromHandle(self.hwnd)
         stack = [(root, 0)]
         matches = []
@@ -107,13 +120,13 @@ class WindowsAdapter:
         while stack:
             count += 1
             if count > 4000 or time.monotonic() > deadline:
-                raise RuntimeError("The accessibility search exceeded its limit.")
+                raise RuntimeError("Поиск элементов занял слишком много времени. Попробуй отдельное окно чата.")
             control, depth = stack.pop()
             try:
                 if self.selectors[role].matches(control) and not control.IsOffscreen:
                     matches.append(control)
                     if len(matches) > 1:
-                        raise RuntimeError("Ambiguous " + role + " control; recalibrate it.")
+                        raise RuntimeError("Найдено несколько одинаковых элементов: " + role + ". Повтори настройку.")
                 if depth < 30:
                     stack.extend((child, depth + 1) for child in control.GetChildren())
             except COMError:
@@ -121,13 +134,13 @@ class WindowsAdapter:
         if not matches:
             if optional:
                 return None
-            raise RuntimeError("The " + role + " control is not visible in the bound chat.")
+            raise RuntimeError("Элемент сейчас не виден: " + role)
         return matches[0]
 
     def click(self, role):
         control = self.find(role)
         if not control.IsEnabled:
-            raise RuntimeError(role + " is disabled.")
+            raise RuntimeError("Элемент недоступен: " + role)
         self.validate()
         # Invoke the accessible button; never guess screen coordinates.
         control.GetInvokePattern().Invoke()
@@ -141,7 +154,7 @@ class WindowsAdapter:
 
     def replace_text(self, expected, replacement):
         if self.read_text() != expected:
-            raise RuntimeError("Composer changed while removing the stop command.")
+            raise RuntimeError("Текст изменился во время удаления команды. Проверь черновик.")
         control = self.find("composer")
         self.validate()
         # A multiline browser editor may not expose ValuePattern. Fail closed;

@@ -11,8 +11,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - if: runner.os == 'Windows'
+        run: python -m pip install -r requirements.txt
       - run: python -m unittest discover -s tests -v
       - run: python -m compileall -q hey_gpt tests
       - if: runner.os == 'Windows'
         shell: powershell
         run: ./scripts/validate_speech.ps1
+      - if: runner.os == 'Windows'
+        run: python -m hey_gpt.model_setup
+      - if: runner.os == 'Windows'
+        run: python scripts/validate_local_speech.py

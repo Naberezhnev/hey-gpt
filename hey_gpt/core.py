@@ -49,7 +49,7 @@ class Controller:
         try:
             if command == "WAKE" and self.state is State.IDLE:
                 if self.adapter.read_text().strip():
-                    raise RuntimeError("The composer already contains text; review it first.")
+                    raise RuntimeError("В поле уже есть черновик. Отправь или очисти его перед диктовкой.")
                 self.adapter.click("microphone")
                 self.started_at = self.clock()
                 self.state = State.STARTING
@@ -67,7 +67,7 @@ class Controller:
                 if self.adapter.recording_visible():
                     self.state = State.RECORDING
                 elif self.clock() - self.started_at >= 10:
-                    raise RuntimeError("The recording did not start within 10 seconds.")
+                    raise RuntimeError("Запись не началась за 10 секунд. Проверь кнопку диктовки.")
             except Exception as exc:
                 self.fail(exc)
             return
@@ -76,7 +76,7 @@ class Controller:
         try:
             now = self.clock()
             if now - self.started_at >= self.timeout:
-                raise RuntimeError("Transcription did not become ready within 45 seconds.")
+                raise RuntimeError(f"Расшифровка не готова за {self.timeout:g} секунд. Проверь результат в чате.")
             # The finish button must disappear before text can be treated as final.
             if self.adapter.recording_visible():
                 return
@@ -91,16 +91,16 @@ class Controller:
                 return
             cleaned = strip_stop_command(text)
             if not cleaned.strip():
-                raise RuntimeError("No message remains after removing Stop GPT.")
+                raise RuntimeError("После удаления Stop GPT сообщение пустое.")
             if cleaned != text:
                 self.adapter.replace_text(text, cleaned)
                 if self.adapter.read_text() != cleaned:
-                    raise RuntimeError("Could not verify removal of the stop command.")
+                    raise RuntimeError("Не удалось проверить удаление Stop GPT. Исправь черновик вручную.")
             self.state = State.REVIEW
             if self.auto_send:
                 # Re-check text and target immediately before the send click.
                 if self.adapter.read_text() != cleaned:
-                    raise RuntimeError("The message changed before sending; review it manually.")
+                    raise RuntimeError("Текст изменился перед отправкой. Проверь его вручную.")
                 self.adapter.click("send")
                 self.state = State.IDLE
         except Exception as exc:

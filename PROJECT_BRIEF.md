@@ -16,7 +16,7 @@ The target app already records and transcribes messages. The helper recognizes o
 
 ## Architecture
 
-1. Windows System.Speech recognizes the fixed command grammar locally.
+1. Vosk recognizes the fixed command grammar locally, using a small English model downloaded once.
 2. A Python controller tracks Ready, Starting, Recording, Transcribing, Review, and Error states.
 3. A Windows UI Automation adapter resolves calibrated accessible controls in one bound foreground window.
 4. The helper waits for the recording control to appear before signaling readiness.
@@ -35,7 +35,7 @@ The hypothesis is fewer manual interactions while preserving the current convers
 
 ## Current evidence
 
-Initial source implementation exists. Eighteen portable workflow and cleanup tests pass. Documentation, a Windows compilation check, and CI configuration are included. Live microphone sharing, legacy recognizer availability, UI selectors, and end-to-end sending remain unverified.
+Version 0.2 has a Russian setup UI, microphone choice/level indicator, and a command-test mode. Thirty-five local tests pass. Synthetic wake/stop samples are recognized, and a microphone stream opens. Live microphone sharing, spoken-command accuracy, UI calibration, and end-to-end sending remain unverified. The initial System.Speech recognizer dependency has been replaced with Vosk; see docs/WINDOWS_VALIDATION.md.
 
 There is no public adoption metric yet. A launch video, pilot feedback, and real-device measurements are planned after first validation.
 

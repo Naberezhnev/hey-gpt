@@ -3,15 +3,16 @@
 ## v0.1: fixed commands on one Windows device
 
 Implemented in source:
-- Hi ChatGPT / Stop GPT grammar.
+- Hi ChatGPT / Stop GPT grammar with local Vosk recognition and a one-time model download.
 - Calibrated accessible controls; one bound foreground window.
 - Start/finish/transcription workflow and optional automatic sending.
 - Stop phrase cleanup when the editor exposes a writable value.
 - Visible listening state, pause control, and Ctrl+Alt+P.
-- Portable controller tests and a Windows compilation check, both passed locally.
+- Russian setup UI with a microphone selector, level indicator, and command-test mode.
+- 35 local tests and synthetic command recognition checks passed.
 
 Next acceptance gates:
-- Install and verify the legacy English recognizer on the test computer; the initial installed-recognizer list was empty.
+- Verify live command recognition and audible microphone input on the test computer.
 - Demonstrate concurrent helper/browser microphone access.
 - Bind and invoke controls in the user's actual browser.
 - Confirm at least ten consecutive clean end-to-end sends in a non-sensitive test conversation.
@@ -30,7 +31,7 @@ Next acceptance gates:
 - Custom wake phrases and additional command languages.
 - Read the latest answer aloud and stop reading by voice.
 - Verified adapters for other Codex surfaces.
-- Stronger on-device wake-word engine if System.Speech performs poorly or is unavailable.
+- Dedicated on-device wake-word detector if Vosk command recognition needs better latency or false-activation performance.
 - macOS and phone feasibility investigation.
 - Optional documented Codex App Server integration rather than UI button automation.
 
