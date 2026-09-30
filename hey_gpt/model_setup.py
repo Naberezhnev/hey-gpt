@@ -7,18 +7,19 @@ import zipfile
 
 MODEL_NAME = "vosk-model-small-en-us-0.15"
 MODEL_URL = "https://alphacephei.com/vosk/models/" + MODEL_NAME + ".zip"
+MODELS = {"en": MODEL_NAME, "ru": "vosk-model-small-ru-0.22"}
 REQUIRED = ("am/final.mdl", "conf/model.conf", "graph/HCLr.fst", "graph/Gr.fst")
 
 
-def model_path():
-    return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "HeyGPT" / "models" / MODEL_NAME
+def model_path(language="en"):
+    return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "HeyGPT" / "models" / MODELS[language]
 
 
 def valid_model(path):
     return all((Path(path) / part).is_file() for part in REQUIRED)
 
 
-def extract_model(archive, destination):
+def extract_model(archive, destination, model_name=MODEL_NAME):
     """Validate every member before writing; the installer owns this temp folder."""
     destination = Path(destination).resolve()
     with zipfile.ZipFile(archive) as source:
@@ -27,20 +28,20 @@ def extract_model(archive, destination):
         for item in source.infolist():
             path = PurePosixPath(item.filename)
             if (path.is_absolute() or ".." in path.parts or "\\" in item.filename
-                    or not path.parts or path.parts[0] != MODEL_NAME
+                    or not path.parts or path.parts[0] != model_name
                     or ((item.external_attr >> 16) & 0o170000) == 0o120000):
                 raise ValueError("Unsafe model archive member")
             if not (destination / item.filename).resolve().is_relative_to(destination):
                 raise ValueError("Model archive escapes destination")
         source.extractall(destination)
-    result = destination / MODEL_NAME
+    result = destination / model_name
     if not valid_model(result):
         raise ValueError("Model archive is incomplete")
     return result
 
 
-def ensure_model(progress=print):
-    target = model_path()
+def ensure_model(progress=print, language="en"):
+    target = model_path(language)
     if valid_model(target):
         return target
     if target.exists():
@@ -50,7 +51,7 @@ def ensure_model(progress=print):
     # TemporaryDirectory can only remove the installer-created folder here.
     with tempfile.TemporaryDirectory(prefix="hey-gpt-", dir=target.parent) as temporary:
         archive = Path(temporary) / "model.zip"
-        request = urllib.request.Request(MODEL_URL, headers={"User-Agent": "HeyGPT/0.2"})
+        request = urllib.request.Request("https://alphacephei.com/vosk/models/" + MODELS[language] + ".zip", headers={"User-Agent": "HeyGPT/0.3"})
         with urllib.request.urlopen(request, timeout=30) as response, archive.open("wb") as output:
             total = int(response.headers.get("Content-Length", 0))
             received = 0
@@ -67,7 +68,7 @@ def ensure_model(progress=print):
             if total and received != total:
                 raise ValueError("Model download was interrupted")
         progress("Распаковка и проверка модели…")
-        extracted = extract_model(archive, temporary)
+        extracted = extract_model(archive, temporary, MODELS[language])
         try:
             extracted.rename(target)
         except OSError:
@@ -84,6 +85,7 @@ if __name__ == "__main__":
         sys.stdout.reconfigure(encoding="utf-8")
     try:
         print(ensure_model())
+        print(ensure_model(language="ru"))
     except Exception as error:
         print("Не удалось подготовить модель:", error)
         raise SystemExit(1)

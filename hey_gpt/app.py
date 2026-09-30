@@ -1,4 +1,4 @@
-"""Setup UI; microphone and desktop actions start only through explicit controls."""
+"""Compact dashboard with explicit listening modes and separate setup."""
 import json
 import os
 from pathlib import Path
@@ -8,120 +8,215 @@ import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import messagebox, ttk
-
+from tkinter import messagebox
+import customtkinter as ctk
 from .core import Controller, State
 from .model_setup import ensure_model, model_path, valid_model
+from .notifications import Notifications
 from .settings import load_selectors, save_selectors
 
+BG, INK, MUTED, BLUE = "#F3F5F9", "#17283F", "#637187", "#2364E8"
 STATE_TEXT = {
-    State.IDLE: "Готово. Скажи Hi ChatGPT в выбранном окне чата.",
-    State.STARTING: "Жду начала записи в чате…",
-    State.RECORDING: "Запись началась. Диктуй; затем скажи Stop GPT.",
-    State.TRANSCRIBING: "Жду расшифровку сообщения…",
-    State.REVIEW: "Текст готов. Проверь и отправь его вручную; затем нажми «Сбросить цикл».",
-    State.ERROR: "Цикл остановлен после ошибки.",
+    State.IDLE: "Скажи Hi ChatGPT, Hi GPT или «Привет джи пи ти». После сигнала диктуй сообщение.",
+    State.STARTING: "Включаю диктовку в выбранном чате…",
+    State.RECORDING: "Диктуй. Для завершения скажи Stop GPT или «Стоп джи пи ти», затем сделай паузу.",
+    State.TRANSCRIBING: "Чат расшифровывает запись. Жду готовый текст…",
+    State.REVIEW: "Текст готов к проверке. Отправь его в чате; следующая команда начнёт новый цикл.",
+    State.SENDING: "Проверяю, что сообщение отправлено…",
+    State.WAITING: "Жду завершения ответа. Ты услышишь «Ответ готов».",
+    State.ERROR: "Исправь причину и повтори голосовую команду.",
+    State.PAUSING: "Останавливаю запись. Этот черновик отправлен не будет.",
+    State.PAUSED: "Действия на паузе. Скажи Hi GPT для продолжения. Микрофон слушает команды.",
 }
-ROLES = [("window", "1. Выбрать окно чата"), ("composer", "2. Поле сообщения"),
-         ("microphone", "3. Кнопка диктовки"), ("finish", "4. Завершить запись"),
-         ("send", "5. Отправить сообщение")]
-
+STATE_TITLES = {State.IDLE: "Слушаю команду", State.STARTING: "Начинаю запись",
+    State.RECORDING: "Можно говорить", State.TRANSCRIBING: "Готовлю сообщение",
+    State.REVIEW: "Проверь текст", State.SENDING: "Отправляю", State.WAITING: "Задача выполняется",
+    State.ERROR: "Требуется внимание", State.PAUSING: "Отменяю диктовку", State.PAUSED: "Действия на паузе"}
+ROLES = [("window", "Выбрать окно курсором"), ("composer", "Поле сообщения"),
+         ("microphone", "Кнопка диктовки"), ("finish", "Завершить запись"), ("send", "Отправить")]
 
 class Application:
-    def __init__(self, root):
-        import winsound
+    def __init__(self, root, replay_wave=None):
         from .windows import WindowsAdapter, emergency_pressed
-        self.beep = lambda: winsound.MessageBeep(winsound.MB_OK)
-        self.emergency_pressed = emergency_pressed
-        self.root = root
+        self.root, self.emergency_pressed = root, emergency_pressed
+        self.replay_wave = replay_wave
         self.path = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "HeyGPT" / "selectors.json"
         selectors, warning = load_selectors(self.path)
         self.adapter = WindowsAdapter(selectors)
         self.controller = Controller(self.adapter, clock=time.monotonic)
+        self.notifications = Notifications()
         self.events = queue.Queue()
         self.process = None
         self.ready = False
         self.mode = None
-        self.capturing = False
-        self.preparing = False
-        self.closed = False
-        self.capture_job = None
-        self.last_state = None
+        self.capturing = self.preparing = self.closed = False
+        self.closing = False
+        self.capture_job = self.last_state = None
         self.speech_error = ""
-        self.devices = [None]
-        self.root.title("Hey GPT — голосовое управление")
-        self.root.geometry("880x760")
-        self.root.minsize(800, 700)
-        self.status = tk.StringVar(value=warning or "Подготовь модель, проверь команды, затем настрой кнопки чата.")
-        self.auto_send = tk.BooleanVar(value=False)
-        self.model_status = tk.StringVar()
-        self.level = tk.IntVar(value=0)
-        self.command_status = tk.StringVar(value="Команды ещё не проверены.")
-
-        ttk.Label(root, text="Hi ChatGPT → диктовка · Stop GPT → завершение", font=("Segoe UI", 14)).pack(pady=12)
-        ttk.Label(root, text="Говори название GPT по буквам: «джи пи ти». После команды сделай короткую паузу.").pack()
-        speech = ttk.LabelFrame(root, text="1. Подготовка и проверка микрофона", padding=10)
-        speech.pack(fill="x", padx=15, pady=10)
-        ttk.Label(speech, textvariable=self.model_status).grid(row=0, column=0, columnspan=3, sticky="w")
-        ttk.Button(speech, text="Подготовить модель", command=self.prepare_model).grid(row=1, column=0, pady=8, sticky="w")
-        ttk.Button(speech, text="Проверить команды", command=lambda: self.start("test")).grid(row=1, column=1, padx=8)
-        ttk.Button(speech, text="Остановить", command=self.pause).grid(row=1, column=2)
-        ttk.Label(speech, text="Микрофон:").grid(row=2, column=0, sticky="w")
-        self.device_combo = ttk.Combobox(speech, state="readonly", width=68)
-        self.device_combo.grid(row=2, column=1, columnspan=2, sticky="ew")
-        self.device_combo.bind("<<ComboboxSelected>>", lambda event: self.pause())
-        ttk.Progressbar(speech, variable=self.level, maximum=100).grid(row=3, column=0, columnspan=3, sticky="ew", pady=8)
-        ttk.Label(speech, textvariable=self.command_status, wraplength=800).grid(row=4, column=0, columnspan=3, sticky="w")
-        ttk.Button(speech, text="Доступ к микрофону в Windows", command=lambda: os.startfile("ms-settings:privacy-microphone")).grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
-        setup = ttk.LabelFrame(root, text="2. Кнопки нужного чата", padding=10)
-        setup.pack(fill="x", padx=15, pady=5)
-        ttk.Label(setup, text="Нажми кнопку ниже и за 4 секунды наведи курсор на нужный элемент чата.").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
-        self.labels = {}
-        for index, (role, label) in enumerate(ROLES, 1):
-            ttk.Button(setup, text=label, command=lambda r=role: self.capture(r)).grid(row=index, column=0, sticky="ew", pady=3)
-            self.labels[role] = tk.StringVar()
-            ttk.Label(setup, textvariable=self.labels[role], wraplength=500).grid(row=index, column=1, sticky="w", padx=10)
-        ttk.Label(setup, text="Для шага 4 начни запись вручную. Для шага 5 подготовь черновик.\nПосле настройки закончи запись и очисти черновик.", wraplength=800).grid(row=6, column=0, columnspan=2, sticky="w", pady=8)
-        ttk.Checkbutton(root, text="Отправлять автоматически после расшифровки (сначала проверь вручную)", variable=self.auto_send).pack(pady=6)
-        actions = ttk.Frame(root)
-        actions.pack(pady=8)
-        ttk.Button(actions, text="Включить управление чатом", command=lambda: self.start("workflow")).pack(side="left", padx=5)
-        ttk.Button(actions, text="Пауза", command=self.pause).pack(side="left", padx=5)
-        ttk.Button(actions, text="Сбросить цикл", command=self.reset).pack(side="left", padx=5)
-        ttk.Label(root, textvariable=self.status, wraplength=830, foreground="#174a7e").pack(padx=15, pady=8)
-        ttk.Label(root, text="Ctrl+Alt+P — пауза. В режиме проверки кнопки чата не нажимаются.\nРаспознавание локальное; помощник не сохраняет аудио и сообщения.").pack(pady=4)
+        self.next_monitor = 0
+        self.devices, self.device_names = [None], ["Микрофон Windows по умолчанию"]
+        self.windows = []
+        self.status = tk.StringVar(value=warning or "Выбери чат в настройках, затем включи помощника.")
+        self.auto_send, self.sound = tk.BooleanVar(value=True), tk.BooleanVar(value=True)
+        self.model_status, self.level = tk.StringVar(), tk.IntVar(value=0)
+        self.command_status = tk.StringVar(value="Микрофон выключен")
+        self.mode_text = tk.StringVar(value="НА ПАУЗЕ")
+        self.title_text = tk.StringVar(value="Готов к разговору")
+        self.target_text = tk.StringVar(value="Чат ещё не выбран")
+        root.title("Hey GPT — голосовой помощник")
+        root.geometry("720x700")
+        root.minsize(640, 620)
+        root.configure(**({"fg_color": BG} if isinstance(root, ctk.CTk) else {"bg": BG}))
+        ctk.set_appearance_mode("light")
+        self.build_ui()
         self.refresh_labels()
         self.refresh_model()
         self.refresh_devices()
+        self.refresh_windows()
         root.protocol("WM_DELETE_WINDOW", self.close)
-        root.after(150, self.pump)
+        root.after(100, self.pump)
+
+    def label(self, parent, text="", variable=None, size=14, color=INK, **kwargs):
+        return ctk.CTkLabel(parent, text=text, textvariable=variable, font=("Segoe UI", size), text_color=color, **kwargs)
+
+    def build_ui(self):
+        top = ctk.CTkFrame(self.root, fg_color=BG)
+        top.pack(fill="x", padx=28, pady=(22, 12))
+        ctk.CTkLabel(top, text="H", width=44, height=44, corner_radius=14, fg_color=BLUE,
+            text_color="white", font=("Segoe UI", 24, "bold")).pack(side="left")
+        self.label(top, "Hey GPT", size=24).pack(side="left", padx=12)
+        self.label(top, "Продолжай голосом", size=12, color=MUTED).pack(side="right")
+        self.tabs = ctk.CTkTabview(self.root, fg_color=BG, segmented_button_selected_color=BLUE)
+        self.tabs.pack(fill="both", expand=True, padx=22, pady=(0, 10))
+        home, setup = self.tabs.add("Помощник"), self.tabs.add("Настройки")
+        self.label(home, "Продолжай, где бы ты ни был", size=27, anchor="w").pack(fill="x", pady=(18, 4))
+        self.label(home, "Голосом запускай диктовку и узнавай, когда ответ готов.", color=MUTED,
+            anchor="w").pack(fill="x", pady=(0, 18))
+        card = ctk.CTkFrame(home, fg_color="white", corner_radius=20)
+        card.pack(fill="both", expand=True)
+        self.label(card, variable=self.mode_text, size=12, color=BLUE).pack(pady=(24, 8))
+        self.label(card, variable=self.title_text, size=28).pack(pady=(0, 12))
+        self.meter = ctk.CTkProgressBar(card, width=230, height=6, progress_color=BLUE)
+        self.meter.pack(pady=(0, 12))
+        self.meter.set(0)
+        self.label(card, variable=self.command_status, size=12, color=MUTED).pack()
+        self.label(card, variable=self.status, size=14, wraplength=540, height=80).pack(fill="x", padx=22, pady=14)
+        self.main_button = ctk.CTkButton(card, text="Включить помощника", height=46, width=250,
+            corner_radius=12, font=("Segoe UI", 15), fg_color=BLUE, command=self.toggle)
+        self.main_button.pack(pady=(0, 16))
+        ctk.CTkButton(card, text="Пауза действий · без отправки", fg_color="transparent", text_color=MUTED,
+            hover_color=BG, command=self.suspend).pack(pady=(0, 8))
+        self.label(card, variable=self.target_text, size=12, color=MUTED, wraplength=520).pack(pady=(0, 22))
+        guide = ctk.CTkFrame(home, fg_color=BG)
+        guide.pack(fill="x", pady=(18, 8))
+        for number, name, detail in [("01", "Позови", "Hi GPT / Привет GPT"),
+                ("02", "Продиктуй", "После короткого сигнала"), ("03", "Продолжай", "Stop GPT → отправка")]:
+            part = ctk.CTkFrame(guide, fg_color=BG)
+            part.pack(side="left", expand=True, fill="x")
+            self.label(part, number + "  " + name).pack(anchor="w")
+            self.label(part, detail, size=11, color=MUTED).pack(anchor="w", pady=4)
+        self.label(home, "«Пауза GPT» — без отправки  ·  Ctrl+Alt+P — выключить микрофон",
+            size=11, color=MUTED).pack(pady=(8, 0))
+        scroll = ctk.CTkScrollableFrame(setup, fg_color="white", corner_radius=16)
+        scroll.pack(fill="both", expand=True, pady=(12, 0))
+        self.label(scroll, "Чат для голосового управления", size=20, anchor="w").pack(fill="x", padx=14, pady=(16, 8))
+        self.label(scroll, "Открой нужный разговор. Выбери его окно и привяжи текущую вкладку.",
+            color=MUTED, wraplength=560, anchor="w").pack(fill="x", padx=14, pady=(0, 10))
+        row = ctk.CTkFrame(scroll, fg_color="transparent")
+        row.pack(fill="x", padx=14)
+        self.window_combo = ctk.CTkComboBox(row, state="readonly", width=380, values=["Выбери окно"])
+        self.window_combo.pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(row, text="Обновить", width=100, command=self.refresh_windows).pack(side="left", padx=(8, 0))
+        ctk.CTkButton(scroll, text="Подключить выбранный чат", height=38, command=self.bind_selected).pack(fill="x", padx=14, pady=10)
+        self.label(scroll, variable=self.target_text, size=12, color=MUTED, wraplength=560).pack(padx=14)
+        self.label(scroll, "Микрофон и команды", size=20, anchor="w").pack(fill="x", padx=14, pady=(22, 10))
+        self.device_combo = ctk.CTkComboBox(scroll, state="readonly", command=lambda value: self.pause())
+        self.device_combo.pack(fill="x", padx=14)
+        self.label(scroll, variable=self.model_status, size=12, color=MUTED, wraplength=560).pack(padx=14, pady=8)
+        row = ctk.CTkFrame(scroll, fg_color="transparent")
+        row.pack(fill="x", padx=14)
+        ctk.CTkButton(row, text="Загрузить модели", command=self.prepare_model).pack(side="left", expand=True, padx=(0, 6))
+        ctk.CTkButton(row, text="Проверить команды", command=lambda: self.start("test")).pack(side="left", expand=True)
+        self.label(scroll, "В проверке кнопки чата не нажимаются. GPT произноси по буквам: «джи пи ти».",
+            color=MUTED, size=12, wraplength=560).pack(padx=14, pady=10)
+        ctk.CTkSwitch(scroll, text="Автоматически отправлять после расшифровки", variable=self.auto_send,
+            command=lambda: setattr(self.controller, "auto_send", self.auto_send.get())).pack(anchor="w", padx=14, pady=8)
+        ctk.CTkSwitch(scroll, text="Звуковые уведомления", variable=self.sound,
+            command=lambda: setattr(self.notifications, "enabled", self.sound.get())).pack(anchor="w", padx=14, pady=8)
+        self.audio_mode = ctk.CTkComboBox(scroll, state="readonly", values=["Короткие сигналы", "Голос Windows"],
+            command=lambda value: setattr(self.notifications, "mode", "voice" if value == "Голос Windows" else "tones"))
+        self.audio_mode.set("Короткие сигналы")
+        self.audio_mode.pack(fill="x", padx=14, pady=8)
+        ctk.CTkButton(scroll, text="Проверить уведомление о готовности", fg_color=MUTED,
+            command=lambda: self.notifications.say("Ответ готов")).pack(anchor="w", padx=14, pady=8)
+        ctk.CTkButton(scroll, text="Проверить запуск диктовки", fg_color=MUTED,
+            command=self.check_dictation).pack(anchor="w", padx=14, pady=8)
+        self.label(scroll, "Ручная настройка элементов", size=20, anchor="w").pack(fill="x", padx=14, pady=(22, 4))
+        self.label(scroll, "Если кнопки не найдены: нажми шаг и за 4 секунды наведи курсор на элемент. Для завершения сначала начни запись; для отправки подготовь черновик.",
+            color=MUTED, size=12, wraplength=560, justify="left").pack(fill="x", padx=14, pady=8)
+        self.labels = {}
+        for role, name in ROLES:
+            row = ctk.CTkFrame(scroll, fg_color="transparent")
+            row.pack(fill="x", padx=14, pady=4)
+            ctk.CTkButton(row, text=name, width=210, fg_color=MUTED, command=lambda r=role: self.capture(r)).pack(side="left")
+            self.labels[role] = tk.StringVar()
+            self.label(row, variable=self.labels[role], size=11, color=MUTED, wraplength=300).pack(side="left", padx=12)
+        self.label(scroll, "После настройки останови запись и очисти тестовый черновик в чате.", size=12,
+            color=MUTED, wraplength=560).pack(padx=14, pady=(8, 20))
 
     def refresh_model(self):
-        self.model_status.set("Модель готова. Английский речевой компонент Windows не требуется."
-                              if valid_model(model_path()) else "Модель не установлена. Нужна однократная загрузка ~40 МБ.")
+        en, ru = valid_model(model_path()), valid_model(model_path("ru"))
+        self.model_status.set("Английские и русские команды готовы." if en and ru else
+            "Английские команды готовы. Загрузи модель для «Привет GPT»." if en else "Загрузка двух моделей: около 85 МБ, один раз.")
 
     def refresh_devices(self):
-        names = ["Микрофон Windows по умолчанию"]
-        self.devices = [None]
         try:
             import sounddevice as sd
             for index, device in enumerate(sd.query_devices()):
-                if device["max_input_channels"]:
+                if device["max_input_channels"] and sd.query_hostapis(device["hostapi"])["name"] == "Windows WASAPI":
                     self.devices.append(index)
-                    host = sd.query_hostapis(device["hostapi"])["name"]
-                    names.append(f"{device['name']} ({host})")
+                    self.device_names.append(device["name"])
         except Exception as error:
             self.status.set("Не удалось найти микрофон: " + str(error))
-        self.device_combo["values"] = names
-        self.device_combo.current(0)
+        self.device_combo.configure(values=self.device_names)
+        self.device_combo.set(self.device_names[0])
+
+    def refresh_windows(self):
+        self.windows = self.adapter.available_windows()
+        self.window_combo.configure(values=[name for hwnd, name in self.windows] or ["Открой ChatGPT или Codex"])
+        self.window_combo.set(self.windows[0][1] if self.windows else "Открой ChatGPT или Codex")
+
+    def bind_selected(self):
+        if self.capturing or self.preparing:
+            return
+        self.pause(False)
+        if self.controller.state is State.PAUSING:
+            self.status.set("Дождись остановки записи перед сменой чата.")
+            return
+        try:
+            index = [name for hwnd, name in self.windows].index(self.window_combo.get())
+            self.adapter.bind_window(self.windows[index][0])
+            self.adapter.discover()
+            save_selectors(self.path, self.adapter.export())
+            self.status.set("Чат подключён. Включи помощника и скажи Hi GPT.")
+            self.tabs.set("Помощник")
+        except Exception as error:
+            self.status.set("Подключение: " + str(error))
+        self.refresh_labels()
 
     def refresh_labels(self):
-        self.labels["window"].set(self.adapter.window_title or "Не выбрано; выбирай окно при каждом запуске")
+        self.target_text.set("Чат: " + self.adapter.window_title if self.adapter.hwnd else "Чат ещё не выбран")
+        self.labels["window"].set(self.adapter.window_title or "Выбирай при каждом запуске")
         for role in self.labels.keys() - {"window"}:
             selector = self.adapter.selectors.get(role)
             self.labels[role].set((selector.name or selector.automation_id) if selector else "Не настроено")
 
+    def toggle(self):
+        self.pause() if self.process else self.start("workflow")
+
     def pause(self, show_status=True):
+        if self.mode == "workflow" and self.process:
+            self.controller.suspend()
         child, self.process = self.process, None
         if child is not None and child.poll() is None:
             child.terminate()
@@ -130,23 +225,41 @@ class Application:
             except subprocess.TimeoutExpired:
                 child.kill()
                 child.wait(timeout=2)
-        self.ready = False
-        self.mode = None
+        self.ready, self.mode = False, None
         self.level.set(0)
-        self.controller.reset()
+        self.meter.set(0)
+        if self.controller.state is not State.PAUSING:
+            self.controller.reset()
         self.last_state = None
+        self.mode_text.set("НА ПАУЗЕ")
+        self.title_text.set("Микрофон выключен")
+        self.command_status.set("Команды не прослушиваются")
+        self.main_button.configure(text="Включить помощника", fg_color=BLUE)
         if show_status:
-            self.status.set("Прослушивание остановлено. Запись, уже начатую в чате, закончи или отмени вручную.")
+            self.status.set("Микрофон выключен. Автоматическая отправка отменена." if self.controller.state is not State.PAUSING
+                else "Микрофон выключен. Завершаю запись в чате без отправки…")
+
+    def suspend(self):
+        if self.mode == "workflow":
+            self.controller.command("PAUSE")
+            self.show_state()
+        else:
+            self.pause()
 
     def prepare_model(self):
         if self.preparing or self.capturing:
             return
         self.pause(False)
+        if self.controller.state is State.PAUSING:
+            self.status.set("Сначала дождись остановки записи; затем загрузи модели.")
+            return
         self.preparing = True
-        self.status.set("Подготовка речевой модели…")
+        self.status.set("Загружаю локальные речевые модели…")
+        self.tabs.set("Помощник")
         def work():
             try:
-                ensure_model(lambda message: self.events.put(("setup_progress", message)))
+                for language in ("en", "ru"):
+                    ensure_model(lambda message: self.events.put(("setup_progress", message)), language)
                 self.events.put(("setup_done", None))
             except Exception as error:
                 self.events.put(("setup_error", str(error)))
@@ -156,8 +269,12 @@ class Application:
         if self.capturing or self.preparing:
             return
         self.pause(False)
+        if self.controller.state is State.PAUSING:
+            self.status.set("Дождись остановки записи перед настройкой элементов.")
+            return
         self.capturing = True
         self.status.set("Наведи курсор на нужный элемент чата. Выбор через 4 секунды…")
+        self.tabs.set("Помощник")
         self.capture_job = self.root.after(4000, lambda: self.finish_capture(role))
 
     def finish_capture(self, role):
@@ -165,7 +282,7 @@ class Application:
         try:
             self.adapter.capture_at_cursor(role)
             save_selectors(self.path, self.adapter.export())
-            self.status.set("Элемент выбран. Продолжай настройку кнопок.")
+            self.status.set("Элемент выбран. Продолжи настройку или включи помощника.")
         except Exception as error:
             self.status.set("Ошибка настройки: " + str(error))
         finally:
@@ -173,7 +290,6 @@ class Application:
             self.capturing = False
 
     def read_events(self, child):
-        assert child.stdout is not None
         try:
             for line in child.stdout:
                 try:
@@ -189,38 +305,77 @@ class Application:
         if self.capturing or self.preparing:
             return
         self.pause(False)
+        if self.controller.state is State.PAUSING:
+            self.status.set("Дождись остановки текущей записи перед новым запуском.")
+            return
         self.speech_error = ""
         if not valid_model(model_path()):
-            self.status.set("Сначала нажми «Подготовить модель».")
+            self.status.set("Загрузи модели в настройках.")
             return
-        if mode == "workflow":
-            missing = {"composer", "microphone", "finish", "send"} - self.adapter.selectors.keys()
-            if not self.adapter.hwnd or missing:
-                self.status.set("Сначала выбери окно чата и настрой все четыре элемента.")
-                return
+        if mode == "workflow" and (not self.adapter.hwnd or {"composer", "microphone", "finish", "send"} - self.adapter.selectors.keys()):
+            self.status.set("Подключи нужный чат в настройках.")
+            self.tabs.set("Настройки")
+            return
         self.controller.auto_send = self.auto_send.get()
         try:
-            executable = Path(sys.executable)
-            if executable.name.lower() == "pythonw.exe":
-                executable = executable.with_name("python.exe")
-            arguments = [str(executable), "-u", "-m", "hey_gpt.speech"]
-            device = self.devices[self.device_combo.current()]
+            if getattr(sys, "frozen", False):
+                arguments = [str(Path(sys.executable).parent / "voice" / "HeyGPTVoice.exe")]
+            else:
+                executable = Path(sys.executable)
+                if executable.name.lower() == "pythonw.exe":
+                    executable = executable.with_name("python.exe")
+                arguments = [str(executable), "-u", "-m", "hey_gpt.speech"]
+            device = self.devices[self.device_names.index(self.device_combo.get())]
             if device is not None:
                 arguments += ["--device", str(device)]
-            self.process = subprocess.Popen(arguments, cwd=Path(__file__).resolve().parent.parent,
+            if self.replay_wave:
+                arguments += ["--wav", str(self.replay_wave), "--keep-alive"]
+            self.process = subprocess.Popen(arguments,
+                cwd=Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent,
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8",
                 errors="replace", creationflags=subprocess.CREATE_NO_WINDOW)
             self.mode = mode
             threading.Thread(target=self.read_events, args=(self.process,), daemon=True).start()
             self.status.set("Запускаю локальное распознавание…")
-            self.command_status.set("Скажи Hi ChatGPT, затем Stop GPT. После каждой команды сделай паузу.")
+            self.title_text.set("Подключаю микрофон")
+            self.mode_text.set("СИНТЕТИЧЕСКИЙ ТЕСТ" if self.replay_wave else "ПРОВЕРКА КОМАНД" if mode == "test" else "ГОЛОСОВОЕ УПРАВЛЕНИЕ")
+            self.main_button.configure(text="Выключить микрофон", fg_color=INK)
+            self.tabs.set("Помощник")
         except OSError as error:
             self.status.set("Не удалось запустить распознавание: " + str(error))
 
     def reset(self):
         self.controller.reset()
         self.last_state = None
-        self.status.set("Цикл сброшен. Очисти черновик и закончи запись в чате перед следующей командой.")
+
+    def check_dictation(self):
+        if self.capturing or self.preparing:
+            return
+        self.pause(False)
+        if self.controller.state is State.PAUSING:
+            self.status.set("Дождись остановки предыдущей записи.")
+            return
+        self.controller.command("WAKE")
+        self.show_state()
+        if self.controller.state is State.STARTING:
+            self.root.after(1500, self.finish_dictation_check)
+        self.tabs.set("Помощник")
+
+    def finish_dictation_check(self):
+        if self.closed:
+            return
+        self.controller.tick()
+        if self.controller.state is State.RECORDING:
+            self.controller.command("STOP")
+            if self.controller.state is State.ERROR:
+                self.show_state()
+                return
+            self.title_text.set("Диктовка работает")
+            self.status.set("Запуск и остановка диктовки проверены. Если чат создал тестовый черновик, очисти его перед включением помощника.")
+            self.notifications.say("Диктовка работает")
+        else:
+            self.controller.fail(RuntimeError("Кнопка нажата, но начало записи не подтверждено. Проверь настройку диктовки."))
+            self.show_state()
 
     def pump(self):
         if self.closed:
@@ -235,20 +390,21 @@ class Application:
                 elif source in ("setup_done", "setup_error"):
                     self.preparing = False
                     self.refresh_model()
-                    self.status.set("Модель готова. Нажми «Проверить команды»." if source == "setup_done"
-                                    else "Ошибка подготовки модели: " + payload)
+                    self.status.set("Модели готовы. Подключи чат и включи помощника." if source == "setup_done" else "Ошибка загрузки: " + payload)
                 elif source is self.process:
                     event = payload.get("event")
                     if event == "ready":
                         self.ready = True
-                        self.status.set("Проверка команд включена. Скажи Hi ChatGPT и Stop GPT."
-                                        if self.mode == "test" else "Слушаю. Вернись в выбранное окно чата и скажи Hi ChatGPT.")
+                        self.title_text.set("Проверка микрофона" if self.mode == "test" else "Слушаю команду")
+                        self.status.set("Скажи Hi GPT или «Привет джи пи ти», затем Stop GPT. В этом режиме чат не управляется." if self.mode == "test" else STATE_TEXT[State.IDLE])
+                        self.command_status.set("Микрофон: " + payload.get("device", "подключён"))
                     elif event == "level":
                         self.level.set(payload.get("value", 0))
+                        self.meter.set(min(1, payload.get("value", 0) / 30))
                     elif event == "command" and self.ready:
                         command = payload.get("command")
-                        if command in ("WAKE", "STOP"):
-                            self.command_status.set("Распознано: " + ("Hi ChatGPT" if command == "WAKE" else "Stop GPT"))
+                        if command in ("WAKE", "STOP", "PAUSE"):
+                            self.command_status.set(time.strftime("%H:%M:%S") + " · Распознано: " + {"WAKE": "Hi ChatGPT / Привет GPT", "STOP": "Stop GPT", "PAUSE": "Пауза GPT"}[command])
                             if self.mode == "workflow":
                                 self.controller.command(command)
                                 self.show_state()
@@ -256,46 +412,90 @@ class Application:
                         self.speech_error = payload.get("message", "Ошибка микрофона.")
                         self.pause(False)
                         self.status.set("Ошибка: " + self.speech_error)
+                        self.title_text.set("Проверь микрофон")
+                        self.notifications.say("Микрофон отключён. Проверь подключение.")
             if self.process and self.process.poll() is not None:
                 code = self.process.returncode
                 self.pause(False)
-                self.status.set(self.speech_error or f"Распознавание остановилось (код {code}). Повтори проверку команд.")
+                self.status.set(self.speech_error or f"Распознавание остановилось (код {code}). Включи помощника снова.")
             if self.ready and self.mode == "workflow":
+                now = time.monotonic()
+                if self.controller.state not in (State.IDLE, State.WAITING) or now >= self.next_monitor:
+                    self.controller.observe_current()
+                    self.controller.tick()
+                    self.next_monitor = now + 1
+                    self.show_state()
+            elif self.controller.state is State.PAUSING:
                 self.controller.tick()
                 self.show_state()
         except Exception as error:
             self.pause(False)
             self.status.set("Ошибка: " + str(error))
-        self.root.after(150, self.pump)
+        self.root.after(100, self.pump)
 
     def show_state(self):
         state = self.controller.state
         if state is not self.last_state:
-            if state is State.RECORDING:
-                self.beep()
+            self.title_text.set(STATE_TITLES[state])
             self.status.set(self.controller.error or STATE_TEXT[state])
+            if state is State.RECORDING:
+                self.notifications.tone("ready")
+            elif state is State.PAUSED:
+                self.notifications.tone("pause")
+            phrases = {State.WAITING: "Сообщение отправлено" if self.controller.sent_by_us else "Задача выполняется",
+                State.REVIEW: "Текст готов. Проверь сообщение", State.ERROR: "Нужна помощь. Проверь окно помощника"}
+            if state in phrases:
+                self.notifications.say(phrases[state])
+            elif state is State.IDLE and self.last_state is State.WAITING:
+                self.notifications.say("Ответ готов")
             self.last_state = state
 
     def close(self):
+        if self.closed:
+            return
+        if not self.closing:
+            self.closing = True
+            if self.capture_job is not None:
+                self.root.after_cancel(self.capture_job)
+                self.capture_job = None
+            self.pause(False)
+            self.main_button.configure(state="disabled")
+        if self.controller.state is State.PAUSING:
+            self.controller.tick()
+            if self.controller.state is State.PAUSING:
+                self.root.after(100, self.close)
+                return
         self.closed = True
-        if self.capture_job is not None:
-            self.root.after_cancel(self.capture_job)
-        self.pause(False)
+        self.notifications.close()
         self.root.destroy()
-
 
 def main():
     if sys.platform != "win32":
         raise SystemExit("Hey GPT requires Windows 10/11.")
-    root = tk.Tk()
+    root = ctk.CTk()
     try:
-        Application(root)
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--replay", type=Path, help="Developer test with synthetic command WAV; does not open microphone")
+        parser.add_argument("--self-check-output", type=Path, help="Developer smoke check: write local GUI/worker readiness JSON, then exit")
+        args = parser.parse_args()
+        app = Application(root, args.replay)
+        if args.self_check_output:
+            root.withdraw()
+            app.start("test")
+            def check():
+                from . import __version__
+                report = {"version": __version__, "ui_ready": True, "microphone_worker_ready": app.ready,
+                    "status": app.status.get(), "default_audio": app.notifications.mode}
+                args.self_check_output.parent.mkdir(parents=True, exist_ok=True)
+                args.self_check_output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+                app.close()
+            root.after(6000, check)
     except Exception as error:
-        messagebox.showerror("Hey GPT — ошибка запуска", "Не удалось открыть приложение. Запусти Check.cmd.\n\n" + str(error), parent=root)
+        messagebox.showerror("Hey GPT — ошибка запуска", str(error), parent=root)
         root.destroy()
         raise
     root.mainloop()
-
 
 if __name__ == "__main__":
     main()

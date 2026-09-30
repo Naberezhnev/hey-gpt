@@ -9,7 +9,11 @@ class State(Enum):
     RECORDING = "Recording: say Stop GPT"
     TRANSCRIBING = "Waiting for transcription"
     REVIEW = "Text ready for review"
+    SENDING = "Verifying message delivery"
+    WAITING = "Waiting for the answer"
     ERROR = "Paused after an error"
+    PAUSING = "Stopping dictation without sending"
+    PAUSED = "Actions paused; listening for wake"
 
 
 def strip_stop_command(text: str) -> str:
@@ -34,6 +38,48 @@ class Controller:
         self.last_text = None
         self.changed_at = 0.0
         self.started_at = 0.0
+        self.completed = 0
+        self.saw_busy = False
+        self.response_baseline = 0
+        self.sent_by_us = False
+        self.owns_recording = False
+        self.cancel_finish_sent = False
+        self.cancel_wait_for_start = False
+
+    def suspend(self):
+        """Stop owned recording, keep its draft, never send during cancellation."""
+        previous = self.state
+        self.error = ""
+        if previous is State.PAUSING:
+            return
+        if previous in (State.STARTING, State.RECORDING) or self.owns_recording:
+            self.state = State.PAUSING
+            self.cancel_wait_for_start = previous is State.STARTING
+            self.cancel_finish_sent = False
+            self.started_at = self.clock()
+            try:
+                self.adapter.prepare_target()
+                self.tick()
+            except Exception as exc:
+                self.fail(exc)
+        else:
+            self.state = State.PAUSED
+
+    def observe_current(self):
+        """Notice a task already running when the assistant is enabled."""
+        if self.state is not State.IDLE:
+            return
+        try:
+            busy, responses = self.adapter.response_status()
+            if busy:
+                self.saw_busy, self.response_baseline = True, responses
+                self.changed_at = 0
+                self.started_at = self.clock()
+                self.sent_by_us = False
+                self.state = State.WAITING
+        except Exception:
+            # Passive observation must not interrupt work in another tab.
+            pass
 
     def fail(self, exc):
         self.error = str(exc)
@@ -47,14 +93,31 @@ class Controller:
 
     def command(self, command):
         try:
-            if command == "WAKE" and self.state is State.IDLE:
+            if command == "PAUSE":
+                self.suspend()
+            elif command == "WAKE" and self.state in (State.IDLE, State.ERROR, State.REVIEW, State.PAUSED):
+                self.adapter.prepare_target()
+                if self.adapter.recording_visible():
+                    raise RuntimeError("В чате уже идёт запись. Скажи Stop GPT, чтобы завершить её.")
                 if self.adapter.read_text().strip():
                     raise RuntimeError("В поле уже есть черновик. Отправь или очисти его перед диктовкой.")
+                self.owns_recording = True
                 self.adapter.click("microphone")
+                self.error = ""
                 self.started_at = self.clock()
                 self.state = State.STARTING
-            elif command == "STOP" and self.state is State.RECORDING:
+            elif command == "STOP" and self.state in (State.RECORDING, State.STARTING, State.ERROR):
+                self.adapter.prepare_target()
+                if not self.adapter.recording_visible():
+                    if self.state is State.STARTING:
+                        self.suspend()
+                    elif self.state is State.ERROR:
+                        self.state = State.PAUSED
+                        self.error = ""
+                    return
                 self.adapter.click("finish")
+                self.owns_recording = False
+                self.error = ""
                 self.started_at = self.clock()
                 self.last_text = None
                 self.state = State.TRANSCRIBING
@@ -62,6 +125,47 @@ class Controller:
             self.fail(exc)
 
     def tick(self):
+        if self.state is State.PAUSING:
+            try:
+                recording = self.adapter.recording_visible()
+                if recording:
+                    if not self.cancel_finish_sent:
+                        self.adapter.prepare_target()
+                        self.adapter.click("finish")
+                        self.cancel_finish_sent = True
+                elif self.cancel_finish_sent or not self.cancel_wait_for_start or self.clock() - self.started_at >= 10:
+                    self.state = State.PAUSED
+                    self.owns_recording = False
+                if recording and self.clock() - self.started_at >= 10:
+                    raise RuntimeError("Не удалось остановить запись. Останови её в чате; отправка отменена.")
+            except Exception as exc:
+                self.fail(exc)
+            return
+        if self.state in (State.SENDING, State.WAITING):
+            try:
+                now = self.clock()
+                busy, responses = self.adapter.response_status()
+                self.saw_busy = self.saw_busy or busy
+                if self.state is State.SENDING:
+                    if not self.adapter.read_text().strip():
+                        self.sent_by_us = True
+                        self.state = State.WAITING
+                        self.started_at = now
+                    elif now - self.started_at >= 10:
+                        raise RuntimeError("Отправка не подтверждена. Сообщение осталось в поле; повторной отправки не было.")
+                elif not busy and (self.saw_busy or responses > self.response_baseline):
+                    if not self.changed_at:
+                        self.changed_at = now
+                    elif now - self.changed_at >= self.stable_for:
+                        self.completed += 1
+                        self.state = State.IDLE
+                else:
+                    self.changed_at = 0
+                if self.state is State.WAITING and now - self.started_at >= 600:
+                    raise RuntimeError("Не удалось подтвердить завершение ответа за 10 минут. Проверь чат.")
+            except Exception as exc:
+                self.fail(exc)
+            return
         if self.state is State.STARTING:
             try:
                 if self.adapter.recording_visible():
@@ -93,15 +197,20 @@ class Controller:
             if not cleaned.strip():
                 raise RuntimeError("После удаления Stop GPT сообщение пустое.")
             if cleaned != text:
+                self.adapter.prepare_target()
                 self.adapter.replace_text(text, cleaned)
                 if self.adapter.read_text() != cleaned:
                     raise RuntimeError("Не удалось проверить удаление Stop GPT. Исправь черновик вручную.")
             self.state = State.REVIEW
             if self.auto_send:
+                self.adapter.prepare_target()
                 # Re-check text and target immediately before the send click.
                 if self.adapter.read_text() != cleaned:
                     raise RuntimeError("Текст изменился перед отправкой. Проверь его вручную.")
+                self.saw_busy, self.response_baseline = self.adapter.response_status()
                 self.adapter.click("send")
-                self.state = State.IDLE
+                self.started_at = self.clock()
+                self.changed_at = 0
+                self.state = State.SENDING
         except Exception as exc:
             self.fail(exc)

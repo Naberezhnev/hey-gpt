@@ -1,38 +1,21 @@
-# Roadmap
+# План развития
 
-## v0.1: fixed commands on one Windows device
+## 0.3.1 beta
 
-Implemented in source:
-- Hi ChatGPT / Stop GPT grammar with local Vosk recognition and a one-time model download.
-- Calibrated accessible controls; one bound foreground window.
-- Start/finish/transcription workflow and optional automatic sending.
-- Stop phrase cleanup when the editor exposes a writable value.
-- Visible listening state, pause control, and Ctrl+Alt+P.
-- Russian setup UI with a microphone selector, level indicator, and command-test mode.
-- 35 local tests and synthetic command recognition checks passed.
+Реализованы голосовой запуск и завершение диктовки, английские/русские команды, привязка существующей вкладки, защита черновика, проверка отправки, уведомление о готовности, отдельная голосовая пауза без отправки и короткие сигналы вместо озвучки по умолчанию. Есть интерфейс с отдельными настройками и переносимая сборка Windows.
 
-Next acceptance gates:
-- Verify live command recognition and audible microphone input on the test computer.
-- Demonstrate concurrent helper/browser microphone access.
-- Bind and invoke controls in the user's actual browser.
-- Confirm at least ten consecutive clean end-to-end sends in a non-sensitive test conversation.
-- Measure behavior when the window changes, transcription is delayed, and the stop phrase is included.
+54 автоматических теста, десять синтетических речевых сценариев. Подробные границы проверки описаны в docs/WINDOWS_VALIDATION.md.
 
-## v0.2: pilot and installation
+## Перед публичной демонстрацией
 
-- Package a simple Windows installer/executable after the first verified cycle.
-- Improve editor cleanup for contenteditable controls where ValuePattern is unavailable.
-- Add browser-specific adapters if necessary, with explicit supported versions.
-- Measure activation delay, false activations, missed commands, CPU usage, and distance from the microphone.
-- Gather pilot feedback before claiming broader accessibility benefits.
+- Повторить полный живой цикл в одном текущем разговоре на исправленной сборке.
+- Выполнить серию последовательных циклов и замерить задержки по этапам.
+- Проверить дальность, шум и совместное использование микрофона браузером.
+- Записать демонстрацию и собрать замечания первых пользователей.
 
-## Later, only after the basic workflow proves useful
+## Последующие версии
 
-- Custom wake phrases and additional command languages.
-- Read the latest answer aloud and stop reading by voice.
-- Verified adapters for other Codex surfaces.
-- Dedicated on-device wake-word detector if Vosk command recognition needs better latency or false-activation performance.
-- macOS and phone feasibility investigation.
-- Optional documented Codex App Server integration rather than UI button automation.
-
-These are future ideas, not features shipped in the current source alpha.
+- Более естественные локальные голоса с оценкой размера моделей и лицензий.
+- Проверенные адаптеры других браузеров и Codex.
+- Опциональное чтение ответа и команда остановки чтения.
+- Подписанный установщик, обновления и измеренные показатели распознавания.

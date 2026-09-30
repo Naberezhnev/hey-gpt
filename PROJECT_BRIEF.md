@@ -1,46 +1,25 @@
-# Hey GPT — project brief
+# Hey GPT — описание проекта
 
-## Problem
+## Задача
 
-People working in ChatGPT or Codex often step away while a response or task runs. Adding an instruction through dictation requires returning to the computer and manually pressing the microphone and send controls. An existing voice conversation does not solve the initial hands-free activation step for every workflow.
+Продолжать существующий разговор с ChatGPT, отойдя от компьютера: услышать завершение ответа, вызвать диктовку голосом, добавить инструкцию и отправить её без ручного нажатия кнопок.
 
-## Proposed product
+## Решение
 
-A small opt-in desktop helper that adds fixed voice activation to the currently selected conversation without replacing that conversation or copying it into a separate assistant.
+Независимый помощник для Windows. Команды распознаются локально; сам ChatGPT выполняет диктовку и обработку сообщения. Разговор и аккаунт остаются в выбранной вкладке браузера.
 
-The initial interaction is: **Hi ChatGPT → recording confirmation → dictate → Stop GPT → transcription → optional Send**.
+Цикл: Hi GPT → сигнал готовности записи → диктовка → Stop GPT → проверка расшифровки → отправка → уведомление о готовом ответе. Отдельная команда «Пауза GPT» отменяет дальнейшие действия без отправки и допускает повторный вызов голосом.
 
-## Why this implementation is deliberately narrow
+## Собственная разработка и зависимости
 
-The target app already records and transcribes messages. The helper recognizes only control phrases and operates existing buttons. That avoids rebuilding conversation storage, model access, and a speech assistant. The first release targets one Windows computer and a calibrated UI.
+Контроллер состояний, привязка вкладки, проверки действий, удаление завершающей команды, управление отменой и интерфейс разработаны в этом проекте. Для распознавания используется Vosk, для аудиозахвата — sounddevice, для доступа к интерфейсу — uiautomation/comtypes, для оформления — CustomTkinter. Эти компоненты сохраняют свои лицензии. Весь стек не заявляется написанным с нуля.
 
-## Architecture
+## Подтверждённые результаты
 
-1. Vosk recognizes the fixed command grammar locally, using a small English model downloaded once.
-2. A Python controller tracks Ready, Starting, Recording, Transcribing, Review, and Error states.
-3. A Windows UI Automation adapter resolves calibrated accessible controls in one bound foreground window.
-4. The helper waits for the recording control to appear before signaling readiness.
-5. The target app handles dictation and returns text to its composer.
-6. The helper waits for transcription to settle, checks the Send control, removes a trailing stop command if writable, and optionally invokes Send.
+Версия 0.3.1 beta: 54 автоматических теста и десять синтетических речевых сценариев. Реальные запуск и остановка диктовки в ChatGPT через Яндекс Браузер проверены; пользователь подтвердил распознавание и работу программы. Регрессии неправильного выбора вкладки и отмены позднего запуска покрыты тестами. Сборка для Windows запускается без установленного Python.
 
-The helper does not need a model API for the initial workflow. It does not retain audio or conversation content. It reads the composer transiently for readiness and stop-command cleanup.
+Проверка готовности основана на интерфейсе ответа чата, не на независимой оценке выполнения внешней задачи. Совместимость Codex и других браузеров требует отдельной валидации. Не заявляются готовность к массовой эксплуатации, метрики использования или подтверждённый эффект доступности.
 
-## Intended users and benefits to validate
+## Следующие проверки
 
-- Creators who move between physical activity and computer-based work.
-- Developers who add instructions while a task is running.
-- People who find repeated keyboard/mouse interaction difficult.
-
-The hypothesis is fewer manual interactions while preserving the current conversation. Accessibility benefit and compatibility must be tested with users; they are not yet demonstrated outcomes.
-
-## Current evidence
-
-Version 0.2 has a Russian setup UI, microphone choice/level indicator, and a command-test mode. Thirty-five local tests pass. Synthetic wake/stop samples are recognized, and a microphone stream opens. Live microphone sharing, spoken-command accuracy, UI calibration, and end-to-end sending remain unverified. The initial System.Speech recognizer dependency has been replaced with Vosk; see docs/WINDOWS_VALIDATION.md.
-
-There is no public adoption metric yet. A launch video, pilot feedback, and real-device measurements are planned after first validation.
-
-## Support request
-
-We intend to seek consideration for Codex for Open Source as an early-stage project. ChatGPT Pro with Codex would support debugging, reviewing changes, handling user reports, and maintenance. If an API organization is available, API credits could support a future evaluation harness that compares reference intents with recognition/transcription results and tests optional read-aloud workflows. The initial command/click prototype does not consume API credits.
-
-The project is presented as experimental and in development. No reward, native product integration, or acceptance into an OpenAI program is assumed.
+Живой повтор полного цикла в текущем разговоре, серия последовательных отправок, расстояние до микрофона, шум, задержки и поведение при изменении интерфейса. Локальный тестовый интерфейс явно отделён от настоящего сервиса.

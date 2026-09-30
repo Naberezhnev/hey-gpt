@@ -1,0 +1,22 @@
+<!doctype html><html lang="ru"><meta charset="utf-8"><title>ChatGPT — локальная проверка Hey GPT</title>
+<style>body{font:18px system-ui;background:#f3f5f9;color:#17283f;max-width:850px;margin:80px auto}#composer{background:white;border:1px solid #bbb;padding:20px;min-height:100px;border-radius:12px}button{font:inherit;padding:12px 20px;margin:12px 4px}#log{white-space:pre-wrap;font:14px monospace}</style>
+<h1>Локальная проверка Hey GPT</h1><p>Тестовое окно. Сообщения остаются на этом компьютере. Это не ChatGPT.</p>
+<div role="textbox" contenteditable="true" aria-label="Спросить ChatGPT" id="composer"></div>
+<button aria-label="Диктовать" id="mic">Диктовать</button>
+<button aria-label="Остановить диктовку" id="finish" hidden>Остановить диктовку</button>
+<button aria-label="Отправить" id="send" hidden>Отправить</button>
+<button aria-label="Остановить генерацию" id="busy" hidden>Задача выполняется</button>
+<div id="answer"></div><pre id="log">Ожидание теста</pre>
+<script>
+let clicks={mic:0,finish:0,send:0};
+const sample='Добавь красный фон 😀 {Enter}. Stop GPT.';
+const clean='Добавь красный фон 😀 {Enter}.';
+const $=id=>document.getElementById(id);
+$('composer').oninput=()=>$('send').hidden=!$('composer').innerText.trim();
+$('mic').onclick=()=>{clicks.mic++;$('mic').hidden=true;$('finish').hidden=false;$('log').textContent='Запись началась';};
+$('finish').onclick=()=>{clicks.finish++;$('finish').hidden=true;$('mic').hidden=false;setTimeout(()=>{$('composer').textContent=sample;$('send').hidden=false;},600);};
+$('send').onclick=()=>{clicks.send++;let text=$('composer').innerText;let pass=text===clean&&clicks.mic===1&&clicks.finish===1&&clicks.send===1;
+  $('log').textContent=(pass?'PASS':'FAIL')+' · '+JSON.stringify(clicks)+'\nПолучено: '+text;
+  $('composer').textContent='';$('send').hidden=true;$('busy').hidden=false;
+  setTimeout(()=>{$('busy').hidden=true;$('answer').innerHTML='<p>Ответ готов.</p><button aria-label="Копировать">Копировать</button>';},2500);};
+</script></html>
