@@ -8,11 +8,10 @@ Implemented in source:
 - Start/finish/transcription workflow and optional automatic sending.
 - Stop phrase cleanup when the editor exposes a writable value.
 - Visible listening state, pause control, and Ctrl+Alt+P.
-- Portable controller tests and prepared Windows compilation check.
+- Portable controller tests and a Windows compilation check, both passed locally.
 
 Next acceptance gates:
-- Run the Windows compilation check.
-- Verify the installed legacy English recognizer.
+- Install and verify the legacy English recognizer on the test computer; the initial installed-recognizer list was empty.
 - Demonstrate concurrent helper/browser microphone access.
 - Bind and invoke controls in the user's actual browser.
 - Confirm at least ten consecutive clean end-to-end sends in a non-sensitive test conversation.

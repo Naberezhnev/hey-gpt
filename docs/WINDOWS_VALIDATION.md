@@ -1,12 +1,16 @@
 # First Windows validation
 
-Status: **not run yet**.
+Status: **local startup and compilation checks passed on September 30, 2026; live dictation pending**.
+
+Python 3.12.7 on Windows: all 18 controller tests passed, Tkinter and the UI Automation adapter initialized, and the application window opened. The local System.Speech installed-recognizer list was empty, so recognition and live dictation could not yet be validated.
 
 Record the OS version, Python version, browser/app version, UI language, microphone, and installed speech recognizer. Do not include private prompt content in public reports.
 
 | Check | Expected result | Current result |
 |---|---|---|
-| `scripts/validate_speech.ps1` | Embedded C# compiles | Pending |
+| `scripts/validate_speech.ps1` | Embedded C# compiles | Passed locally |
+| Application startup | Setup window opens | Passed locally |
+| Installed recognizer | English System.Speech engine available | Blocked: no installed recognizers on the test computer |
 | Enable listening | READY with an installed English recognizer | Pending |
 | Control calibration | Four unique, accessible controls in one window | Pending |
 | Hi ChatGPT | Mic invoked once; signal after recording starts | Pending |
