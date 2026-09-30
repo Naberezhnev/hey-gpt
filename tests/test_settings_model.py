@@ -42,7 +42,7 @@ class ModelArchiveTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             target = Path(folder) / "unpacked"
             result = extract_model(self.archive(folder), target)
-            self.assertEqual(result, target / MODEL_NAME)
+            self.assertEqual(result, (target / MODEL_NAME).resolve())
             self.assertTrue((result / REQUIRED[0]).exists())
 
     def test_traversal_is_rejected_before_any_extraction(self):
