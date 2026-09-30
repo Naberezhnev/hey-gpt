@@ -8,3 +8,7 @@ The speech engine should be reused; only the app-specific controller and integra
 - **Porcupine:** provides dedicated local wake-word detection, but the documented Python integration requires an AccessKey. It adds a service credential step to installation. Source: https://github.com/Picovoice/porcupine.
 
 This is an implementation choice for an early trial, not a benchmark claiming Vosk is the most accurate wake-word engine. Synthetic command checks passed; live activation accuracy, noise behavior, and microphone sharing remain acceptance gates.
+
+## Voice briefing — October 1, 2026
+
+Reviewed https://github.com/Dworrall21/chatgpt-bridge/blob/main/dom-selectors.md for the distinction between assistant/user messages and https://github.com/yinkaisheng/Python-UIAutomation-for-Windows for accessibility access. No source files were copied. The local reader uses assistant speaker boundaries, tested against a real ChatGPT accessibility tree, rather than browser DOM selectors or clipboard clicks. GPT generates the optional short section in the existing chat; an explicitly labelled extractive fallback needs no extra model. Speech uses installed Windows SAPI voices. Full structured Codex form/approval integration remains future work.

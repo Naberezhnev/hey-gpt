@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import Mock
-from hey_gpt.speech import CommandDecoder, command_from_result
+from hey_gpt.speech import CommandDecoder, command_from_result, MicrophoneGate
 import json
 
 
@@ -9,6 +9,18 @@ def result(text, confidence=1):
 
 
 class SpeechCommandTests(unittest.TestCase):
+    def test_microphone_drops_speech_captured_before_and_during_readout(self):
+        gate = MicrophoneGate()
+        before = gate.snapshot()
+        self.assertTrue(gate.accepts(before))
+        gate.set_muted(True)
+        during = gate.snapshot()
+        self.assertFalse(gate.accepts(before))
+        self.assertFalse(gate.accepts(during))
+        gate.set_muted(False)
+        self.assertFalse(gate.accepts(before))
+        self.assertFalse(gate.accepts(during))
+        self.assertTrue(gate.accepts(gate.snapshot()))
     def test_exact_wake_and_stop(self):
         self.assertEqual(command_from_result(result("hi chat g p t")), "WAKE")
         self.assertEqual(command_from_result(result("stop g p t")), "STOP")
@@ -17,6 +29,10 @@ class SpeechCommandTests(unittest.TestCase):
         self.assertEqual(command_from_result(result("стоп джи пи ти")), "STOP")
         self.assertEqual(command_from_result(result("pause g p t")), "PAUSE")
         self.assertEqual(command_from_result(result("пауза джи пи ти")), "PAUSE")
+        self.assertEqual(command_from_result(result("повтори")), "REPEAT")
+        self.assertEqual(command_from_result(result("repeat")), "REPEAT")
+        self.assertIsNone(command_from_result(result("[unk] повтори")))
+        self.assertIsNone(command_from_result(result("повтори слова из текста")))
 
     def test_dictated_words_before_stop(self):
         self.assertEqual(command_from_result(result("[unk] [unk] stop g p t")), "STOP")

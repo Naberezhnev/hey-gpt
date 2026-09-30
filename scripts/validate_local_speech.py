@@ -30,6 +30,8 @@ def main():
                ("ru_stop", "Стоп джи пи ти", "STOP", "ru-RU"),
                ("pause", "Pause G P T", "PAUSE", "en-US"),
                ("ru_pause", "Пауза джи пи ти", "PAUSE", "ru-RU"),
+               ("repeat", "Repeat", "REPEAT", "en-US"),
+               ("ru_repeat", "Повтори", "REPEAT", "ru-RU"),
                ("stop_continued", "Stop G P T training is the subject of the article", None, "en-US"),
                ("ordinary", "The weather is pleasant and the blue sky is clear", None, "en-US"),
                ("ru_ordinary", "Сегодня хорошая погода и голубое небо", None, "ru-RU")]

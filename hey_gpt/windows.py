@@ -7,6 +7,7 @@ import time
 import uiautomation as auto
 from comtypes import COMError
 from .composer import composer_text
+from .response import COPY_NAMES, latest_response, assistant_heading
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 user32.GetForegroundWindow.restype = wintypes.HWND
@@ -85,7 +86,7 @@ class WindowsAdapter:
                 try:
                     result.append(control)
                     if depth < 30:
-                        stack.extend((child, depth + 1) for child in control.GetChildren())
+                        stack.extend((child, depth + 1) for child in reversed(control.GetChildren()))
                 except COMError:
                     continue
             self._controls = result
@@ -298,10 +299,16 @@ class WindowsAdapter:
     def response_status(self):
         self.validate(require_foreground=False)
         busy_names = {"Остановить генерацию", "Остановить ответ", "Stop generating", "Stop streaming", "Stop response"}
-        copy_names = {"Копировать", "Скопировать", "Copy", "Copy response"}
-        buttons = [c for c in self.controls() if c.ControlTypeName == "ButtonControl"]
+        copy_names = COPY_NAMES
+        controls = self.controls()
+        buttons = [c for c in controls if c.ControlTypeName == "ButtonControl"]
+        headings = sum(assistant_heading(c) for c in controls)
         return (any(c.Name in busy_names and not c.IsOffscreen for c in buttons),
-                sum(c.Name in copy_names for c in buttons))
+                headings if headings else sum(c.Name in copy_names for c in buttons))
+
+    def read_response(self):
+        self.validate(require_foreground=False)
+        return latest_response(self.controls(fresh=True))
 
     def recording_visible(self):
         return self.find("finish", optional=True) is not None

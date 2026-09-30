@@ -73,6 +73,25 @@ class WorkflowTests(unittest.TestCase):
         self.controller.command("STOP")
         self.desktop.recording = False
 
+    def test_voice_summary_instruction_is_in_sent_message(self):
+        from hey_gpt.briefing import VOICE_INSTRUCTION
+        self.controller.voice_summary = True
+        self.transcribing()
+        self.desktop.text = "От имени компании. Stop GPT."
+        self.controller.tick()
+        self.clock.advance(2)
+        self.controller.tick()
+        self.assertEqual(self.desktop.sent_text, "От имени компании.\n\n" + VOICE_INSTRUCTION)
+        self.assertEqual(self.desktop.clicks.count("send"), 1)
+
+    def test_disabled_summary_does_not_change_message(self):
+        self.transcribing()
+        self.desktop.text = "От имени компании. Stop GPT."
+        self.controller.tick()
+        self.clock.advance(2)
+        self.controller.tick()
+        self.assertEqual(self.desktop.sent_text, "От имени компании.")
+
     def settle(self):
         self.controller.tick()
         self.clock.advance(2)

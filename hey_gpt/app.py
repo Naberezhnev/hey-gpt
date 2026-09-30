@@ -13,7 +13,8 @@ import customtkinter as ctk
 from .core import Controller, State
 from .model_setup import ensure_model, model_path, valid_model
 from .notifications import Notifications
-from .settings import load_selectors, save_selectors
+from .settings import load_selectors, save_selectors, load_preferences, save_preferences
+from .briefing import make_briefing
 
 BG, INK, MUTED, BLUE = "#F3F5F9", "#17283F", "#637187", "#2364E8"
 STATE_TEXT = {
@@ -23,7 +24,7 @@ STATE_TEXT = {
     State.TRANSCRIBING: "Чат расшифровывает запись. Жду готовый текст…",
     State.REVIEW: "Текст готов к проверке. Отправь его в чате; следующая команда начнёт новый цикл.",
     State.SENDING: "Проверяю, что сообщение отправлено…",
-    State.WAITING: "Жду завершения ответа. Ты услышишь «Ответ готов».",
+    State.WAITING: "Жду завершения ответа. После него прозвучит сигнал или краткая сводка.",
     State.ERROR: "Исправь причину и повтори голосовую команду.",
     State.PAUSING: "Останавливаю запись. Этот черновик отправлен не будет.",
     State.PAUSED: "Действия на паузе. Скажи Hi GPT для продолжения. Микрофон слушает команды.",
@@ -44,8 +45,16 @@ class Application:
         selectors, warning = load_selectors(self.path)
         self.adapter = WindowsAdapter(selectors)
         self.controller = Controller(self.adapter, clock=time.monotonic)
-        self.notifications = Notifications()
         self.events = queue.Queue()
+        self.notifications = Notifications(activity=lambda active: self.events.put(("narration", active)))
+        self.preferences_path = self.path.with_name("preferences.json")
+        preferences = load_preferences(self.preferences_path)
+        self.notifications.voice_id = preferences.get("voice_id", "")
+        self.last_briefing = None
+        self.narrating = False
+        self._voice_names = []
+        self._voice_ids = []
+        self._shown_audio_error = ""
         self.process = None
         self.ready = False
         self.mode = None
@@ -58,6 +67,7 @@ class Application:
         self.windows = []
         self.status = tk.StringVar(value=warning or "Выбери чат в настройках, затем включи помощника.")
         self.auto_send, self.sound = tk.BooleanVar(value=True), tk.BooleanVar(value=True)
+        self.voice_summary = tk.BooleanVar(value=preferences.get("voice_summary", False))
         self.model_status, self.level = tk.StringVar(), tk.IntVar(value=0)
         self.command_status = tk.StringVar(value="Микрофон выключен")
         self.mode_text = tk.StringVar(value="НА ПАУЗЕ")
@@ -69,6 +79,7 @@ class Application:
         root.configure(**({"fg_color": BG} if isinstance(root, ctk.CTk) else {"bg": BG}))
         ctk.set_appearance_mode("light")
         self.build_ui()
+        self.root.after(500, self.refresh_voices)
         self.refresh_labels()
         self.refresh_model()
         self.refresh_devices()
@@ -106,6 +117,8 @@ class Application:
         self.main_button.pack(pady=(0, 16))
         ctk.CTkButton(card, text="Пауза действий · без отправки", fg_color="transparent", text_color=MUTED,
             hover_color=BG, command=self.suspend).pack(pady=(0, 8))
+        ctk.CTkButton(card, text="Повторить сводку / вопрос", fg_color="transparent", text_color=BLUE,
+            hover_color=BG, command=self.repeat_briefing).pack(pady=(0, 8))
         self.label(card, variable=self.target_text, size=12, color=MUTED, wraplength=520).pack(pady=(0, 22))
         guide = ctk.CTkFrame(home, fg_color=BG)
         guide.pack(fill="x", pady=(18, 8))
@@ -149,6 +162,27 @@ class Application:
         self.audio_mode.pack(fill="x", padx=14, pady=8)
         ctk.CTkButton(scroll, text="Проверить уведомление о готовности", fg_color=MUTED,
             command=lambda: self.notifications.say("Ответ готов")).pack(anchor="w", padx=14, pady=8)
+        self.label(scroll, "Краткая сводка и вопросы", size=20, anchor="w").pack(fill="x", padx=14, pady=(22, 10))
+        ctk.CTkSwitch(scroll, text="Зачитывать сводку и вопросы после ответа", variable=self.voice_summary,
+            command=self.change_briefing).pack(anchor="w", padx=14, pady=8)
+        self.label(scroll, "При включении к твоим сообщениям добавляется просьба к GPT написать сводку. "
+            "Отдельный API не используется. Вопросы читаются с вариантами ответа. Скажи «Повтори», чтобы услышать ещё раз.",
+            color=MUTED, size=12, wraplength=560, justify="left").pack(fill="x", padx=14, pady=8)
+        self.voice_combo = ctk.CTkComboBox(scroll, state="readonly", values=["Голос Windows по умолчанию"],
+            command=self.select_voice)
+        self.voice_combo.set("Голос Windows по умолчанию")
+        self.voice_combo.pack(fill="x", padx=14, pady=8)
+        ctk.CTkButton(scroll, text="Прослушать выбранный голос", fg_color=MUTED,
+            command=lambda: self.notifications.speak("Привет. Я буду зачитывать краткие итоги и вопросы из твоего чата.")).pack(anchor="w", padx=14, pady=8)
+        ctk.CTkButton(scroll, text="Проверить чтение последнего ответа", fg_color=MUTED,
+            command=self.read_briefing).pack(anchor="w", padx=14, pady=8)
+        self.label(scroll, "Во время озвучки команды временно не распознаются, чтобы помощник не слышал себя. "
+            "После озвучки скажи Hi GPT, продиктуй ответ и закончи Stop GPT. Ctrl+Alt+P сразу останавливает звук и микрофон.",
+            color=MUTED, size=12, wraplength=560, justify="left").pack(fill="x", padx=14, pady=8)
+        self.label(scroll, "Последняя сводка и вопросы", size=14, anchor="w").pack(fill="x", padx=14, pady=(8, 4))
+        self.readout_box = ctk.CTkTextbox(scroll, height=140, wrap="word")
+        self.readout_box.pack(fill="x", padx=14, pady=8)
+        self.readout_box.configure(state="disabled")
         ctk.CTkButton(scroll, text="Проверить запуск диктовки", fg_color=MUTED,
             command=self.check_dictation).pack(anchor="w", padx=14, pady=8)
         self.label(scroll, "Ручная настройка элементов", size=20, anchor="w").pack(fill="x", padx=14, pady=(22, 4))
@@ -196,6 +230,7 @@ class Application:
         try:
             index = [name for hwnd, name in self.windows].index(self.window_combo.get())
             self.adapter.bind_window(self.windows[index][0])
+            self.clear_briefing()
             self.adapter.discover()
             save_selectors(self.path, self.adapter.export())
             self.status.set("Чат подключён. Включи помощника и скажи Hi GPT.")
@@ -215,6 +250,7 @@ class Application:
         self.pause() if self.process else self.start("workflow")
 
     def pause(self, show_status=True):
+        self.notifications.stop()
         if self.mode == "workflow" and self.process:
             self.controller.suspend()
         child, self.process = self.process, None
@@ -225,6 +261,8 @@ class Application:
             except subprocess.TimeoutExpired:
                 child.kill()
                 child.wait(timeout=2)
+        if child is not None and getattr(child, "stdin", None):
+            child.stdin.close()
         self.ready, self.mode = False, None
         self.level.set(0)
         self.meter.set(0)
@@ -240,6 +278,7 @@ class Application:
                 else "Микрофон выключен. Завершаю запись в чате без отправки…")
 
     def suspend(self):
+        self.notifications.stop()
         if self.mode == "workflow":
             self.controller.command("PAUSE")
             self.show_state()
@@ -281,6 +320,8 @@ class Application:
         self.capture_job = None
         try:
             self.adapter.capture_at_cursor(role)
+            if role == "window":
+                self.clear_briefing()
             save_selectors(self.path, self.adapter.export())
             self.status.set("Элемент выбран. Продолжи настройку или включи помощника.")
         except Exception as error:
@@ -317,6 +358,7 @@ class Application:
             self.tabs.set("Настройки")
             return
         self.controller.auto_send = self.auto_send.get()
+        self.controller.voice_summary = self.voice_summary.get()
         try:
             if getattr(sys, "frozen", False):
                 arguments = [str(Path(sys.executable).parent / "voice" / "HeyGPTVoice.exe")]
@@ -333,7 +375,7 @@ class Application:
             self.process = subprocess.Popen(arguments,
                 cwd=Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent,
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8",
-                errors="replace", creationflags=subprocess.CREATE_NO_WINDOW)
+                stdin=subprocess.PIPE, errors="replace", creationflags=subprocess.CREATE_NO_WINDOW)
             self.mode = mode
             threading.Thread(target=self.read_events, args=(self.process,), daemon=True).start()
             self.status.set("Запускаю локальное распознавание…")
@@ -385,7 +427,12 @@ class Application:
                 self.pause()
             while not self.events.empty():
                 source, payload = self.events.get_nowait()
-                if source == "setup_progress":
+                if source == "narration":
+                    self.narrating = payload
+                    self.mute_worker(payload)
+                    if not payload and self.mode == "workflow" and self.controller.state is State.IDLE:
+                        self.title_text.set("Жду твоего ответа" if self.last_briefing and self.last_briefing.questions else "Слушаю команду")
+                elif source == "setup_progress":
                     self.status.set(payload)
                 elif source in ("setup_done", "setup_error"):
                     self.preparing = False
@@ -403,11 +450,19 @@ class Application:
                         self.meter.set(min(1, payload.get("value", 0) / 30))
                     elif event == "command" and self.ready:
                         command = payload.get("command")
-                        if command in ("WAKE", "STOP", "PAUSE"):
-                            self.command_status.set(time.strftime("%H:%M:%S") + " · Распознано: " + {"WAKE": "Hi ChatGPT / Привет GPT", "STOP": "Stop GPT", "PAUSE": "Пауза GPT"}[command])
+                        if self.narrating:
+                            continue
+                        if command in ("WAKE", "STOP", "PAUSE", "REPEAT"):
+                            self.command_status.set(time.strftime("%H:%M:%S") + " · Распознано: " + {"WAKE": "Hi ChatGPT / Привет GPT", "STOP": "Stop GPT", "PAUSE": "Пауза GPT", "REPEAT": "Повтори"}[command])
                             if self.mode == "workflow":
-                                self.controller.command(command)
-                                self.show_state()
+                                if command == "REPEAT":
+                                    self.repeat_briefing()
+                                else:
+                                    if command in ("WAKE", "PAUSE") and not self.notifications.stop():
+                                        self.status.set("Озвучка ещё останавливается. Повтори команду через секунду.")
+                                        continue
+                                    self.controller.command(command)
+                                    self.show_state()
                     elif event == "error":
                         self.speech_error = payload.get("message", "Ошибка микрофона.")
                         self.pause(False)
@@ -428,6 +483,11 @@ class Application:
             elif self.controller.state is State.PAUSING:
                 self.controller.tick()
                 self.show_state()
+            audio_error = self.notifications.error
+            if isinstance(audio_error, str) and audio_error and audio_error != self._shown_audio_error:
+                self._shown_audio_error = audio_error
+                self.status.set(audio_error)
+                self.title_text.set("Проверь озвучку")
         except Exception as error:
             self.pause(False)
             self.status.set("Ошибка: " + str(error))
@@ -447,8 +507,95 @@ class Application:
             if state in phrases:
                 self.notifications.say(phrases[state])
             elif state is State.IDLE and self.last_state is State.WAITING:
-                self.notifications.say("Ответ готов")
+                if self.voice_summary.get():
+                    self.clear_briefing()
+                    self.read_briefing()
+                else:
+                    self.notifications.say("Ответ готов")
             self.last_state = state
+
+    def mute_worker(self, muted):
+        if self.process and self.process.poll() is None and self.process.stdin:
+            try:
+                self.process.stdin.write(json.dumps({"mute": bool(muted)}) + "\n")
+                self.process.stdin.flush()
+            except (OSError, ValueError):
+                pass
+
+    def save_voice_preferences(self):
+        try:
+            save_preferences(self.preferences_path, {"voice_summary": self.voice_summary.get(),
+                "voice_id": self.notifications.voice_id})
+        except OSError as error:
+            self.status.set("Настройки голоса не сохранены: " + str(error))
+
+    def change_briefing(self):
+        self.controller.voice_summary = self.voice_summary.get()
+        if not self.voice_summary.get():
+            self.notifications.stop()
+        self.save_voice_preferences()
+
+    def refresh_voices(self):
+        if self.closed:
+            return
+        voices = self.notifications.voices
+        if voices:
+            self._voice_ids = [""] + [identifier for identifier, name in voices]
+            self._voice_names = ["Голос Windows по умолчанию"] + [name for identifier, name in voices]
+            self.voice_combo.configure(values=self._voice_names)
+            selected = self.notifications.voice_id
+            self.voice_combo.set(self._voice_names[self._voice_ids.index(selected)] if selected in self._voice_ids else self._voice_names[0])
+        else:
+            self.root.after(1000, self.refresh_voices)
+
+    def select_voice(self, value):
+        if value in self._voice_names:
+            self.notifications.stop()
+            self.notifications.voice_id = self._voice_ids[self._voice_names.index(value)]
+            self.save_voice_preferences()
+
+    def read_briefing(self):
+        if self.controller.state not in (State.IDLE, State.PAUSED, State.ERROR, State.REVIEW):
+            self.status.set("Дождись завершения записи или ответа перед чтением.")
+            return
+        try:
+            busy, _ = self.adapter.response_status()
+            if busy:
+                raise ValueError("Ответ ещё формируется. Сводка появится после его завершения.")
+            briefing = make_briefing(self.adapter.read_response())
+            self.last_briefing = briefing
+            self.title_text.set("Жду твоего ответа" if briefing.questions else "Зачитываю сводку")
+            self.present_briefing(briefing)
+            self.notifications.speak(briefing.spoken)
+        except Exception as error:
+            self.status.set("Ответ готов, но сводка недоступна: " + str(error))
+            self.notifications.speak("Ответ готов, но текст для сводки недоступен. Проверь чтение в настройках.")
+
+    def repeat_briefing(self):
+        if self.controller.state in (State.STARTING, State.RECORDING, State.TRANSCRIBING, State.SENDING, State.PAUSING):
+            self.status.set("Повторение доступно после завершения диктовки.")
+            return
+        if not self.last_briefing:
+            self.status.set("Сводки ещё нет. Проверь чтение последнего ответа в настройках.")
+            return
+        self.present_briefing(self.last_briefing)
+        self.notifications.speak(self.last_briefing.spoken)
+
+    def present_briefing(self, briefing):
+        preview = briefing.summary[:210] + ("…" if len(briefing.summary) > 210 else "")
+        if briefing.questions:
+            preview += f"\nВопросов: {len(briefing.questions)}. Прослушай их и ответь через Hi GPT."
+        self.status.set(preview)
+        self.readout_box.configure(state="normal")
+        self.readout_box.delete("1.0", "end")
+        self.readout_box.insert("1.0", briefing.spoken)
+        self.readout_box.configure(state="disabled")
+
+    def clear_briefing(self):
+        self.last_briefing = None
+        self.readout_box.configure(state="normal")
+        self.readout_box.delete("1.0", "end")
+        self.readout_box.configure(state="disabled")
 
     def close(self):
         if self.closed:
@@ -486,7 +633,8 @@ def main():
             def check():
                 from . import __version__
                 report = {"version": __version__, "ui_ready": True, "microphone_worker_ready": app.ready,
-                    "status": app.status.get(), "default_audio": app.notifications.mode}
+                    "status": app.status.get(), "default_audio": app.notifications.mode,
+                    "speech_voice_ready": bool(app.notifications.voices)}
                 args.self_check_output.parent.mkdir(parents=True, exist_ok=True)
                 args.self_check_output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
                 app.close()

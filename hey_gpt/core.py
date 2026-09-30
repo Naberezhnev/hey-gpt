@@ -1,6 +1,7 @@
 """Platform-independent workflow. No microphone, network, or desktop access."""
 from enum import Enum
 import re
+from .briefing import with_voice_instruction
 
 
 class State(Enum):
@@ -27,9 +28,10 @@ def strip_stop_command(text: str) -> str:
 class Controller:
     """Adapter operations must validate their target before each write."""
 
-    def __init__(self, adapter, *, auto_send=False, clock, timeout=45, stable_for=1.5):
+    def __init__(self, adapter, *, auto_send=False, clock, timeout=45, stable_for=1.5, voice_summary=False):
         self.adapter = adapter
         self.auto_send = auto_send
+        self.voice_summary = voice_summary
         self.clock = clock
         self.timeout = timeout
         self.stable_for = stable_for
@@ -196,6 +198,8 @@ class Controller:
             cleaned = strip_stop_command(text)
             if not cleaned.strip():
                 raise RuntimeError("После удаления Stop GPT сообщение пустое.")
+            if self.voice_summary:
+                cleaned = with_voice_instruction(cleaned)
             if cleaned != text:
                 self.adapter.prepare_target()
                 self.adapter.replace_text(text, cleaned)

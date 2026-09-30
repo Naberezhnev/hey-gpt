@@ -31,3 +31,26 @@ def save_selectors(path, selectors):
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(selectors, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(path)
+
+
+def load_preferences(path):
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {}
+        result = {}
+        if isinstance(data.get("voice_summary"), bool):
+            result["voice_summary"] = data["voice_summary"]
+        if isinstance(data.get("voice_id"), str):
+            result["voice_id"] = data["voice_id"]
+        return result
+    except (OSError, ValueError):
+        return {}
+
+
+def save_preferences(path, preferences):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(preferences, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)

@@ -22,3 +22,5 @@ jobs:
         run: python -m hey_gpt.model_setup
       - if: runner.os == 'Windows'
         run: python scripts/validate_local_speech.py
+      - if: runner.os == 'Windows'
+        run: python scripts/validate_briefing.py artifacts/validation/briefing.wav

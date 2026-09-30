@@ -105,6 +105,8 @@ class ApplicationTests(unittest.TestCase):
         self.app.emergency_pressed = lambda: False
         self.child = Mock()
         self.child.poll.return_value = None
+        self.app.last_briefing = None
+        self.app.voice_summary.set(False)
 
     def tearDown(self):
         self.app.close()
@@ -160,3 +162,101 @@ class ApplicationTests(unittest.TestCase):
         self.assertEqual(self.app.controller.state, State.PAUSED)
         self.assertIs(self.app.process, self.child)
         self.child.terminate.assert_not_called()
+
+    def test_completion_reads_summary_and_all_questions_once(self):
+        from hey_gpt.core import State
+        self.app.voice_summary.set(True)
+        self.app.adapter = Mock()
+        self.app.adapter.response_status.return_value = (False, 1)
+        self.app.adapter.read_response.return_value = "Голосовая сводка\nЧерновик готов.\nВопросы к тебе\nОт кого отправить?"
+        self.app.last_state = State.WAITING
+        self.app.controller.state = State.IDLE
+        self.app.show_state()
+        self.app.show_state()
+        self.app.notifications.speak.assert_called_once()
+        self.assertIn("От кого отправить?", self.app.notifications.speak.call_args.args[0])
+        self.assertEqual(self.app.title_text.get(), "Жду твоего ответа")
+        self.app.adapter.read_response.assert_called_once()
+
+    def test_repeat_reuses_readout_without_reading_or_writing_chat(self):
+        from hey_gpt.briefing import make_briefing
+        self.app.last_briefing = make_briefing("Голосовая сводка\nПроверка закончена.")
+        self.app.adapter = Mock()
+        self.app.process, self.app.mode, self.app.ready = self.child, "workflow", True
+        self.app.events.put((self.child, {"event": "command", "command": "REPEAT"}))
+        self.app.controller.observe_current = Mock()
+        self.app.pump()
+        self.app.notifications.speak.assert_called_once_with("Проверка закончена.")
+        self.app.adapter.read_response.assert_not_called()
+        self.app.adapter.click.assert_not_called()
+
+    def test_repeat_during_dictation_cannot_read_aloud(self):
+        from hey_gpt.core import State
+        from hey_gpt.briefing import make_briefing
+        self.app.last_briefing = make_briefing("Готово.")
+        self.app.controller.state = State.RECORDING
+        self.app.repeat_briefing()
+        self.app.notifications.speak.assert_not_called()
+
+    def test_own_readout_commands_are_ignored(self):
+        self.app.process, self.app.mode, self.app.ready = self.child, "workflow", True
+        self.app.controller = Mock()
+        self.app.events.put(("narration", True))
+        self.app.events.put((self.child, {"event": "command", "command": "WAKE"}))
+        self.app.pump()
+        self.app.controller.command.assert_not_called()
+        self.child.stdin.write.assert_called_with('{"mute": true}\n')
+
+    def test_partial_reply_cannot_be_read_as_finished(self):
+        self.app.adapter = Mock()
+        self.app.adapter.response_status.return_value = (True, 1)
+        self.app.read_briefing()
+        self.app.adapter.read_response.assert_not_called()
+        self.assertIsNone(self.app.last_briefing)
+
+    def test_missing_answer_does_not_invent_summary(self):
+        self.app.adapter = Mock()
+        self.app.adapter.response_status.return_value = (False, 1)
+        self.app.adapter.read_response.side_effect = ValueError("not accessible")
+        self.app.read_briefing()
+        self.assertIsNone(self.app.last_briefing)
+        self.assertIn("недоступна", self.app.status.get())
+
+    def test_two_voice_cycles_question_answer_and_next_summary(self):
+        from test_core import FakeDesktop, Clock
+        from hey_gpt.core import Controller, State
+        desktop, clock = FakeDesktop(), Clock()
+        self.app.adapter = desktop
+        self.app.controller = Controller(desktop, auto_send=True, voice_summary=True, clock=clock)
+        self.app.voice_summary.set(True)
+        responses = ["Голосовая сводка\nЧерновик готов.\nВопросы к тебе\nОт кого отправить?",
+                     "Голосовая сводка\nИмя компании добавлено в черновик. Отправка не выполнялась."]
+        for index, dictated in enumerate(("Подготовь письмо", "От имени компании")):
+            desktop.read_response = lambda i=index: responses[i]
+            self.app.controller.command("WAKE")
+            desktop.recording = True
+            self.app.controller.tick()
+            self.app.show_state()
+            self.app.controller.command("STOP")
+            desktop.recording = False
+            desktop.text = dictated + " Stop GPT."
+            self.app.controller.tick()
+            clock.advance(2)
+            self.app.controller.tick()
+            self.assertTrue(desktop.sent_text.startswith(dictated))
+            self.app.controller.tick()
+            self.app.show_state()
+            self.assertEqual(self.app.controller.state, State.WAITING)
+            desktop.busy = True
+            self.app.controller.tick()
+            desktop.busy = False
+            desktop.responses += 1
+            self.app.controller.tick()
+            clock.advance(2)
+            self.app.controller.tick()
+            self.app.show_state()
+            self.assertEqual(self.app.controller.state, State.IDLE)
+        self.assertEqual(desktop.clicks.count("send"), 2)
+        self.assertEqual(self.app.notifications.speak.call_count, 2)
+        self.assertIn("От кого отправить?", self.app.notifications.speak.call_args_list[0].args[0])
+        self.assertIn("Отправка не выполнялась", self.app.last_briefing.spoken)

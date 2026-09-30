@@ -7,6 +7,7 @@ import sys
 import time
 import wave
 import math
+import threading
 
 from .model_setup import model_path, valid_model
 
@@ -16,7 +17,9 @@ PHRASES = {"hi chat g p t": "WAKE", "hi chat gpt": "WAKE",
            "привет джи пи ти": "WAKE", "привет чат джи пи ти": "WAKE",
            "стоп джи пи ти": "STOP", "стоп г п т": "STOP",
            "pause g p t": "PAUSE", "pause gpt": "PAUSE",
-           "пауза джи пи ти": "PAUSE", "пауза г п т": "PAUSE"}
+           "пауза джи пи ти": "PAUSE", "пауза г п т": "PAUSE",
+           "repeat": "REPEAT", "repeat g p t": "REPEAT", "repeat gpt": "REPEAT",
+           "повтори": "REPEAT", "повтори джи пи ти": "REPEAT"}
 
 
 def command_from_result(result):
@@ -28,7 +31,7 @@ def command_from_result(result):
         tokens.pop(0)
     phrase = " ".join(tokens)
     command = PHRASES.get(phrase)
-    if command == "WAKE" and phrase != text:
+    if command in ("WAKE", "REPEAT") and phrase != text:
         return None
     relevant = words[-len(tokens):] if tokens else []
     if (not command or len(relevant) != len(tokens)
@@ -62,6 +65,10 @@ class CommandDecoder:
         self.rec, self.rate = rec, rate
         self.elapsed = self.silence = 0
 
+    def reset(self):
+        self.rec.Reset()
+        self.elapsed = self.silence = 0
+
     def accept(self, data):
         duration = len(data) / (2 * self.rate)
         self.elapsed += duration
@@ -85,6 +92,27 @@ class CommandDecoder:
         return None
 
 
+class MicrophoneGate:
+    """Drop audio captured during narration, including queued speaker echoes."""
+    def __init__(self):
+        self._muted = False
+        self._revision = 0
+        self._lock = threading.Lock()
+
+    def set_muted(self, value):
+        with self._lock:
+            self._muted = value
+            self._revision += 1
+
+    def snapshot(self):
+        with self._lock:
+            return self._muted, self._revision
+
+    def accepts(self, captured):
+        current = self.snapshot()
+        return not current[0] and not captured[0] and captured[1] == current[1]
+
+
 def run(device=None, probe_seconds=None):
     import sounddevice as sd
     from vosk import Model, SetLogLevel
@@ -98,6 +126,18 @@ def run(device=None, probe_seconds=None):
     if valid_model(model_path("ru")):
         recs.append(recognizer(Model(str(model_path("ru"))), rate, "ru"))
     decoders = [CommandDecoder(rec, rate) for rec in recs]
+    gate = MicrophoneGate()
+    def listen_controls():
+        for line in sys.stdin:
+            try:
+                value = json.loads(line)
+                if value.get("mute") is True:
+                    gate.set_muted(True)
+                elif value.get("mute") is False:
+                    gate.set_muted(False)
+            except (ValueError, AttributeError):
+                pass
+    threading.Thread(target=listen_controls, daemon=True).start()
     blocks = queue.Queue(maxsize=24)
     failure = queue.Queue(maxsize=1)
 
@@ -105,7 +145,7 @@ def run(device=None, probe_seconds=None):
         try:
             if status:
                 raise RuntimeError("Микрофон пропускает аудио. Закрой лишние приложения и повтори проверку.")
-            blocks.put_nowait(bytes(data))
+            blocks.put_nowait((bytes(data), gate.snapshot()))
         except (queue.Full, RuntimeError) as exc:
             try:
                 failure.put_nowait(str(exc) or "Распознавание не успевает за микрофоном.")
@@ -120,11 +160,12 @@ def run(device=None, probe_seconds=None):
         peak = 0
         last_command = None
         last_command_at = 0
+        revision = gate.snapshot()[1]
         while probe_seconds is None or time.monotonic() - started < probe_seconds:
             if not failure.empty():
                 raise RuntimeError(failure.get_nowait())
             try:
-                data = blocks.get(timeout=2)
+                data, captured = blocks.get(timeout=2)
             except queue.Empty:
                 raise RuntimeError("От микрофона не поступает звук. Проверь подключение и доступ к микрофону.")
             level = min(100, int(max((abs(value) for value in array("h", data)), default=0) * 100 / 32768))
@@ -132,10 +173,18 @@ def run(device=None, probe_seconds=None):
             if time.monotonic() - last_level >= 0.2:
                 emit("level", value=level)
                 last_level = time.monotonic()
+            current_revision = gate.snapshot()[1]
+            if revision != current_revision:
+                for decoder in decoders:
+                    decoder.reset()
+                revision = current_revision
+                last_command = None
+            if not gate.accepts(captured):
+                continue
             for decoder in decoders:
                 command = decoder.accept(data)
                 now = time.monotonic()
-                if command and (command != last_command or now - last_command_at > 2):
+                if command and gate.accepts(captured) and (command != last_command or now - last_command_at > 2):
                     emit("command", command=command)
                     last_command, last_command_at = command, now
         emit("probe_complete", peak=peak)
