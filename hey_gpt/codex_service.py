@@ -147,7 +147,7 @@ class Service:
                           "autostart": self.config["autostart"], "language": self.config["language"],
                           "speaking": self.notifier.speaking, "speech_error": self.notifier.error,
                           "voices": [{"id": v[0], "name": v[1]} for v in self.notifier.voices],
-                          "version": "0.1.0-beta.2"})
+                          "version": "0.1.0-beta.3"})
             return value
         if action == "enable":
             target = session_id(request.get("session_id"))

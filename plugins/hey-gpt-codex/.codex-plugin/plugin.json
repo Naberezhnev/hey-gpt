@@ -1,6 +1,6 @@
 {
   "name": "hey-gpt-codex",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "description": "Локальное голосовое продолжение выбранной задачи Codex на Windows.",
   "author": {"name": "Hey GPT", "url": "https://github.com/Naberezhnev/hey-gpt"},
   "license": "MIT",

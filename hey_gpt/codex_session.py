@@ -85,10 +85,13 @@ class VoiceSession:
         with self.lock:
             if not self.matches(target):
                 return None
-            if turn and turn in self.completed_turns:
+            # Stop continuations may retain the same Codex turn_id. A new
+            # delivered human message advances revision and needs a new readout.
+            completion = (turn, self.revision)
+            if turn and completion in self.completed_turns:
                 return None
             if turn:
-                self.completed_turns.append(turn)
+                self.completed_turns.append(completion)
             self.state = "standby"
             self.messages.clear()
             self.readout = ""

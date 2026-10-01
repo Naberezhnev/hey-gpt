@@ -51,7 +51,7 @@ class MCPServer:
             versions = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
             result = {"protocolVersion": offered if offered in versions else versions[-1],
                       "capabilities": {"tools": {}},
-                      "serverInfo": {"name": "hey-gpt-codex", "version": "0.1.0-beta.2"}}
+                      "serverInfo": {"name": "hey-gpt-codex", "version": "0.1.0-beta.3"}}
         elif method == "ping":
             result = {}
         elif method == "tools/list":
