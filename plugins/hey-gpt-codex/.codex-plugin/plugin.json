@@ -1,0 +1,20 @@
+{
+  "name": "hey-gpt-codex",
+  "version": "0.1.0-beta.2",
+  "description": "Локальное голосовое продолжение выбранной задачи Codex на Windows.",
+  "author": {"name": "Hey GPT", "url": "https://github.com/Naberezhnev/hey-gpt"},
+  "license": "MIT",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "Hey GPT for Codex",
+    "shortDescription": "Продолжай задачу голосом",
+    "longDescription": "Голосовые сводки и продолжение одной выбранной локальной задачи Codex на Windows. Первое включение и доверие обработчикам явные; ожидание голоса после ответа — до 58 минут.",
+    "developerName": "Hey GPT",
+    "category": "Productivity",
+    "capabilities": ["Interactive"],
+    "defaultPrompt": "Включи Hey GPT для этой задачи: подготовь модели, включи микрофон и голосовое продолжение.",
+    "logo": "./assets/icon.svg"
+  }
+}

@@ -75,3 +75,17 @@ class SpeechCommandTests(unittest.TestCase):
         self.assertIsNone(decoder.accept(b"\0" * 32000))
         rec.FinalResult.assert_called_once()
         rec.Reset.assert_called_once()
+
+    def test_reset_preserves_cumulative_vosk_timestamps_for_stop_boundary(self):
+        rec = Mock()
+        rec.AcceptWaveform.return_value = True
+        rec.Result.return_value = json.dumps({"text": ""})
+        decoder = CommandDecoder(rec, 16000)
+        decoder.accept(b"\0" * 320000)
+        decoder.reset()
+        payload = result("stop g p t")
+        for index, word in enumerate(payload["result"]):
+            word.update(start=10.1 + index * .1, end=10.2 + index * .1)
+        rec.Result.return_value = json.dumps(payload)
+        self.assertEqual(decoder.accept(b"\0" * 32000), "STOP")
+        self.assertAlmostEqual(decoder.last_command_age, .9)

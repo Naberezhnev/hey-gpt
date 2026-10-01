@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "hey-gpt": {
+      "command": "./runtime/HeyGPTCodex/HeyGPTCodex.exe",
+      "args": ["mcp"],
+      "cwd": "./"
+    }
+  }
+}

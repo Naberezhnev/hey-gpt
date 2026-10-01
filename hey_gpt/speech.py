@@ -64,10 +64,26 @@ class CommandDecoder:
     def __init__(self, rec, rate):
         self.rec, self.rate = rec, rate
         self.elapsed = self.silence = 0
+        self.last_command_age = None
 
     def reset(self):
         self.rec.Reset()
-        self.elapsed = self.silence = 0
+        # Vosk Reset keeps word timestamps relative to all accepted audio.
+        self.silence = 0
+        self.last_command_age = None
+
+    def decode(self, result):
+        command = command_from_result(result)
+        self.last_command_age = None
+        if command:
+            tokens = result.get("text", "").split()
+            while tokens and tokens[0] == "[unk]":
+                tokens.pop(0)
+            words = result.get("result", [])
+            start = words[-len(tokens)].get("start") if tokens and len(words) >= len(tokens) else None
+            if isinstance(start, (int, float)) and 0 <= start <= self.elapsed:
+                self.last_command_age = self.elapsed - start
+        return command
 
     def accept(self, data):
         duration = len(data) / (2 * self.rate)
@@ -76,7 +92,7 @@ class CommandDecoder:
         rms = math.sqrt(sum(value * value for value in samples) / max(1, len(samples)))
         self.silence = self.silence + duration if rms < 120 else 0
         if self.rec.AcceptWaveform(data):
-            return command_from_result(json.loads(self.rec.Result()))
+            return self.decode(json.loads(self.rec.Result()))
         if self.silence < .35:
             return None
         partial = json.loads(self.rec.PartialResult())
@@ -85,9 +101,9 @@ class CommandDecoder:
         if (command_from_result(candidate) and words
                 and self.elapsed - words[-1].get("end", self.elapsed) >= .4):
             # Final confidence remains authoritative; partial text alone can't click.
-            command = command_from_result(json.loads(self.rec.FinalResult()))
+            command = self.decode(json.loads(self.rec.FinalResult()))
             self.rec.Reset()
-            self.elapsed = self.silence = 0
+            self.silence = 0
             return command
         return None
 

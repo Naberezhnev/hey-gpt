@@ -5,3 +5,5 @@ dist/
 selectors.json
 models/
 artifacts/
+plugins/hey-gpt-codex/runtime/
+plugins/hey-gpt-codex/DEPENDENCY_LICENSES.txt

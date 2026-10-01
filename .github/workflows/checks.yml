@@ -24,3 +24,7 @@ jobs:
         run: python scripts/validate_local_speech.py
       - if: runner.os == 'Windows'
         run: python scripts/validate_briefing.py artifacts/validation/briefing.wav
+      - if: runner.os == 'Windows'
+        run: python scripts/validate_codex_plugin.py
+      - if: runner.os == 'Windows'
+        run: python scripts/validate_codex_audio.py

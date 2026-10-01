@@ -1,0 +1,10 @@
+{
+  "description": "Hey GPT: локальный микрофон включается явно. Stop ждёт следующую диктовку и продолжает только по настоящей голосовой реплике; молчание не создаёт запросы.",
+  "hooks": {
+    "SessionStart": [{"matcher": "startup|resume|clear|compact", "hooks": [{"type": "command", "command": "\"${PLUGIN_ROOT}/runtime/HeyGPTCodex/HeyGPTCodex.exe\" hook", "commandWindows": "& \"$env:PLUGIN_ROOT/runtime/HeyGPTCodex/HeyGPTCodex.exe\" hook", "timeout": 15, "additionalContextLimit": 700, "statusMessage": "Hey GPT: состояние голосового режима"}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "\"${PLUGIN_ROOT}/runtime/HeyGPTCodex/HeyGPTCodex.exe\" hook", "commandWindows": "& \"$env:PLUGIN_ROOT/runtime/HeyGPTCodex/HeyGPTCodex.exe\" hook", "timeout": 10, "additionalContextLimit": 700}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "\"${PLUGIN_ROOT}/runtime/HeyGPTCodex/HeyGPTCodex.exe\" hook", "commandWindows": "& \"$env:PLUGIN_ROOT/runtime/HeyGPTCodex/HeyGPTCodex.exe\" hook", "timeout": 3600, "statusMessage": "Hey GPT: жду Hi GPT, затем диктовку и Stop GPT (до 58 минут)"}]}],
+    "Interrupt": [{"hooks": [{"type": "command", "command": "\"${PLUGIN_ROOT}/runtime/HeyGPTCodex/HeyGPTCodex.exe\" hook", "commandWindows": "& \"$env:PLUGIN_ROOT/runtime/HeyGPTCodex/HeyGPTCodex.exe\" hook", "timeout": 3}]}],
+    "SessionEnd": [{"hooks": [{"type": "command", "command": "\"${PLUGIN_ROOT}/runtime/HeyGPTCodex/HeyGPTCodex.exe\" hook", "commandWindows": "& \"$env:PLUGIN_ROOT/runtime/HeyGPTCodex/HeyGPTCodex.exe\" hook", "timeout": 3}]}]
+  }
+}
